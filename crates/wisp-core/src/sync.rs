@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+pub mod ntsync;
+
 #[cfg(target_os = "linux")]
 #[inline]
 fn futex(addr: &AtomicU32, op: i32, val: u32, timeout: *const libc::timespec) -> i32 {
