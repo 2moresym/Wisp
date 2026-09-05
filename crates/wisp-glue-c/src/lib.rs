@@ -1,4 +1,4 @@
-extern "C" {
+unsafe extern "C" {
     fn wisp_glue_abi_version() -> u32;
 }
 
