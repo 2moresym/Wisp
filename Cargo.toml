@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/wisp-core",
+    "crates/wisp-pe-loader",
+    "crates/wisp-syscall",
+    "crates/wisp-loader-cli",
+    "crates/wisp-glue-c",
+]
+
+[workspace.package]
+edition = "2024"
+license = "GPL-3.0-only"
+version = "0.1.0"
+
+[workspace.dependencies]
+libc = "0.2"
+memmap2 = "0.9"
+object = "0.36"
+thiserror = "2"
