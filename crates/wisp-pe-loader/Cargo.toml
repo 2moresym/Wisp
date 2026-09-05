@@ -1,0 +1,10 @@
+[package]
+name = "wisp-pe-loader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+object.workspace = true
+thiserror.workspace = true
+memmap2.workspace = true
