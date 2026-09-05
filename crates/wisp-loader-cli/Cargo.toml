@@ -1,0 +1,8 @@
+[package]
+name = "wisp-loader-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wisp-pe-loader = { path = "../wisp-pe-loader" }
