@@ -2,6 +2,8 @@
 
 mod event;
 mod window;
+pub mod wayland;
+pub mod x11;
 
 pub use event::WindowEvent;
-pub use window::{Window, WindowConfig, WindowError, WindowBackend};
+pub use window::{Window, WindowBackend, WindowConfig, WindowError};

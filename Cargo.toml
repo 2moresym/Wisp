@@ -6,6 +6,7 @@ members = [
     "crates/wisp-syscall",
     "crates/wisp-loader-cli",
     "crates/wisp-glue-c",
+    "crates/wisp-window",
 ]
 
 [workspace.package]
