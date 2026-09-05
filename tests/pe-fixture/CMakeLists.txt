@@ -25,14 +25,16 @@ add_custom_command(
 
 add_custom_command(
     OUTPUT "${FIXTURE_EXE}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}"
     COMMAND "${LLD_LINK}"
         /subsystem:console
         /entry:wisp_entry
         /nodefaultlib
         /machine:x64
-        /out:"${FIXTURE_EXE}"
-        "${FIXTURE_OBJ}"
+        /out:wisp-test.exe
+        wisp-test.obj
     DEPENDS "${FIXTURE_OBJ}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
     VERBATIM
 )
 
