@@ -8,7 +8,9 @@ use x11rb::{
     connection::Connection,
     protocol::{xproto, Event},
     rust_connection::RustConnection,
+    wrapper::ConnectionExt as _,
 };
+use x11rb::protocol::xproto::ConnectionExt as _;
 
 use crate::{WindowConfig, WindowError, WindowEvent};
 
