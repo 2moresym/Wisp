@@ -81,7 +81,7 @@ impl Window {
         events
     }
 
-    pub fn native_wayland_display(&self) -> Option<&wayland_client::Display> {
+    pub fn native_wayland_display(&self) -> Option<&wayland_client::protocol::wl_display::WlDisplay> {
         self.wayland.as_ref().map(WaylandWindow::display)
     }
 
