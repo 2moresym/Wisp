@@ -46,7 +46,7 @@ impl X11Window {
 
         connection
             .create_window(
-                x11rb::COPY_FROM_PARENT as u8,
+                x11rb::COPY_DEPTH_FROM_PARENT,
                 window,
                 screen.root,
                 0,
@@ -125,7 +125,10 @@ impl X11Window {
 
     fn handle_event(&mut self, event: Event) {
         match event {
-            Event::ClientMessage(event) if event.format == 32 && event.data.as_data32()[0] == self.wm_delete_window => {
+            Event::ClientMessage(event)
+                if event.format == 32
+                    && event.data.as_data32()[0] == self.wm_delete_window =>
+            {
                 self.events.push(WindowEvent::CloseRequested);
             }
             Event::ConfigureNotify(event) if event.window == self.window => {
