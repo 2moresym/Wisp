@@ -34,7 +34,6 @@ struct State {
     buffer: Option<wl_buffer::WlBuffer>,
     retired_buffers: Vec<wl_buffer::WlBuffer>,
     configured: bool,
-    buffer_dirty: bool,
     width: u32,
     height: u32,
     events: Vec<WindowEvent>,
@@ -52,7 +51,6 @@ impl State {
             buffer: None,
             retired_buffers: Vec::new(),
             configured: false,
-            buffer_dirty: true,
             width,
             height,
             events: Vec::new(),
@@ -79,22 +77,6 @@ impl State {
         self.toplevel = Some(toplevel);
         self.width = config.width;
         self.height = config.height;
-        self.buffer_dirty = true;
-        Ok(())
-    }
-
-    fn recreate_buffer(&mut self, qh: &QueueHandle<Self>) -> Result<(), WindowError> {
-        if !self.buffer_dirty {
-            return Ok(());
-        }
-
-        let shm = self.shm.as_ref().ok_or(WindowError::Wayland("wl_shm missing".into()))?;
-        let new_buffer = create_buffer(shm, qh, self.width, self.height)?;
-
-        if let Some(old) = self.buffer.replace(new_buffer) {
-            self.retired_buffers.push(old);
-        }
-        self.buffer_dirty = false;
         Ok(())
     }
 
@@ -103,7 +85,11 @@ impl State {
             return Ok(());
         }
 
-        self.recreate_buffer(qh)?;
+        let shm = self.shm.as_ref().ok_or(WindowError::Wayland("wl_shm missing".into()))?;
+        let new_buffer = create_buffer(shm, qh, self.width, self.height)?;
+        if let Some(old) = self.buffer.replace(new_buffer) {
+            self.retired_buffers.push(old);
+        }
 
         if let (Some(surface), Some(buffer)) = (&self.surface, &self.buffer) {
             surface.attach(Some(buffer), 0, 0);
@@ -157,7 +143,6 @@ impl WaylandWindow {
         }
         self.state.width = width;
         self.state.height = height;
-        self.state.buffer_dirty = true;
         Ok(())
     }
 
@@ -231,9 +216,7 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for State {
         if let xdg_surface::Event::Configure { serial } = event {
             xdg_surface.ack_configure(serial);
             state.configured = true;
-            if let Err(error) = state.present(qh) {
-                state.events.push(WindowEvent::BackendError(error.to_string()));
-            }
+            let _ = state.present(qh);
         }
     }
 }
@@ -247,7 +230,6 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
                     state.width = width as u32;
                     state.height = height as u32;
                     if changed {
-                        state.buffer_dirty = true;
                         state.events.push(WindowEvent::Resized { width: state.width, height: state.height });
                     }
                 }
