@@ -6,8 +6,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("DISPLAY").is_none() {
         return Err("X11 smoke test requires DISPLAY (X11/XWayland)".into());
     }
-
-    std::env::set_var("WISP_WINDOW_BACKEND", "x11");
+    if std::env::var("WISP_WINDOW_BACKEND").ok().as_deref() != Some("x11") {
+        return Err("set WISP_WINDOW_BACKEND=x11 to run the X11 smoke test".into());
+    }
 
     let mut window = Window::new(WindowConfig {
         title: "Wisp X11 Smoke Test".into(),
