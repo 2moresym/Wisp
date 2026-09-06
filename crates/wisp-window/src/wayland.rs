@@ -135,7 +135,7 @@ impl WaylandWindow {
         Ok(())
     }
 
-    pub fn display(&self) -> &wayland_client::Display {
+    pub fn display(&self) -> &wayland_client::protocol::wl_display::WlDisplay {
         self.connection.display()
     }
 
