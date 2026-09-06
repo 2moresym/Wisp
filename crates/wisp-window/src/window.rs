@@ -1,4 +1,4 @@
-use crate::{wayland::WaylandWindow, WindowEvent};
+use crate::{wayland::WaylandWindow, x11::X11Window, WindowEvent};
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
@@ -28,12 +28,15 @@ pub enum WindowError {
     NotImplemented,
     #[error("Wayland error: {0}")]
     Wayland(String),
+    #[error("X11 error: {0}")]
+    X11(String),
 }
 
 pub struct Window {
     backend: WindowBackend,
     config: WindowConfig,
     wayland: Option<WaylandWindow>,
+    x11: Option<X11Window>,
 }
 
 impl Window {
@@ -41,9 +44,22 @@ impl Window {
         match detect_backend()? {
             WindowBackend::Wayland => {
                 let wayland = WaylandWindow::new(&config)?;
-                Ok(Self { backend: WindowBackend::Wayland, config, wayland: Some(wayland) })
+                Ok(Self {
+                    backend: WindowBackend::Wayland,
+                    config,
+                    wayland: Some(wayland),
+                    x11: None,
+                })
             }
-            WindowBackend::X11 => Err(WindowError::NotImplemented),
+            WindowBackend::X11 => {
+                let x11 = X11Window::new(&config)?;
+                Ok(Self {
+                    backend: WindowBackend::X11,
+                    config,
+                    wayland: None,
+                    x11: Some(x11),
+                })
+            }
         }
     }
 
@@ -54,7 +70,7 @@ impl Window {
     pub fn show(&mut self) -> Result<(), WindowError> {
         match self.backend {
             WindowBackend::Wayland => self.wayland.as_mut().unwrap().show(),
-            WindowBackend::X11 => Err(WindowError::NotImplemented),
+            WindowBackend::X11 => self.x11.as_mut().unwrap().show(),
         }
     }
 
@@ -63,14 +79,14 @@ impl Window {
         self.config.height = height;
         match self.backend {
             WindowBackend::Wayland => self.wayland.as_mut().unwrap().resize(width, height),
-            WindowBackend::X11 => Err(WindowError::NotImplemented),
+            WindowBackend::X11 => self.x11.as_mut().unwrap().resize(width, height),
         }
     }
 
     pub fn poll_events(&mut self) -> Vec<WindowEvent> {
         let events = match self.backend {
-            WindowBackend::Wayland => self.wayland.as_mut().map(WaylandWindow::poll_events).unwrap_or_default(),
-            WindowBackend::X11 => Vec::new(),
+            WindowBackend::Wayland => self.wayland.as_mut().unwrap().poll_events(),
+            WindowBackend::X11 => self.x11.as_mut().unwrap().poll_events(),
         };
         for event in &events {
             if let WindowEvent::Resized { width, height } = *event {
@@ -88,9 +104,38 @@ impl Window {
     pub fn native_wayland_surface(&self) -> Option<&wayland_client::protocol::wl_surface::WlSurface> {
         self.wayland.as_ref().and_then(WaylandWindow::surface)
     }
+
+    pub fn native_x11_connection(&self) -> Option<&x11rb::rust_connection::RustConnection> {
+        self.x11.as_ref().map(X11Window::connection)
+    }
+
+    pub fn native_x11_window(&self) -> Option<x11rb::protocol::xproto::Window> {
+        self.x11.as_ref().map(X11Window::window)
+    }
+
+    pub fn native_x11_screen(&self) -> Option<usize> {
+        self.x11.as_ref().map(X11Window::screen_num)
+    }
 }
 
 fn detect_backend() -> Result<WindowBackend, WindowError> {
+    match std::env::var("WISP_WINDOW_BACKEND").ok().as_deref() {
+        Some("wayland") => {
+            if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                return Ok(WindowBackend::Wayland);
+            }
+            return Err(WindowError::BackendUnavailable);
+        }
+        Some("x11") => {
+            if std::env::var_os("DISPLAY").is_some() {
+                return Ok(WindowBackend::X11);
+            }
+            return Err(WindowError::BackendUnavailable);
+        }
+        Some(_) => return Err(WindowError::BackendUnavailable),
+        None => {}
+    }
+
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         return Ok(WindowBackend::Wayland);
     }
