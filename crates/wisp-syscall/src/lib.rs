@@ -46,7 +46,7 @@ pub fn nt_create_thread(
 pub fn nt_wait_for_single_object(
     process: &WispProcess,
     handle: Handle,
-) -> Result<bool, std::thread::Result<()>> {
+) -> Result<bool, Box<dyn std::any::Any + Send>> {
     match process.wait_thread(handle) {
         Some(result) => result.map(|()| true),
         None => Ok(false),
