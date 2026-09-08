@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use crate::{Handle, HandleTable};
+use crate::{Handle, HandleTable, Peb, Teb};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadState {
@@ -12,6 +12,7 @@ pub enum ThreadState {
 
 pub struct WispProcess {
     handles: HandleTable,
+    peb: Arc<Peb>,
     threads: Mutex<HashMap<Handle, Arc<WispThread>>>,
 }
 
@@ -19,16 +20,20 @@ impl WispProcess {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             handles: HandleTable::new(),
+            peb: Arc::new(Peb::new()),
             threads: Mutex::new(HashMap::new()),
         })
     }
+
+    #[inline]
+    pub fn peb(&self) -> &Arc<Peb> { &self.peb }
 
     pub fn create_thread<F>(self: &Arc<Self>, f: F) -> Result<Handle, std::io::Error>
     where
         F: FnOnce() + Send + 'static,
     {
         let handle = self.handles.reserve();
-        let thread = Arc::new(WispThread::spawn(f)?);
+        let thread = Arc::new(WispThread::spawn(f, Arc::clone(&self.peb))?);
         self.threads
             .lock()
             .expect("process thread table poisoned")
@@ -69,7 +74,7 @@ struct WispThread {
 }
 
 impl WispThread {
-    fn spawn<F>(f: F) -> Result<Self, std::io::Error>
+    fn spawn<F>(f: F, peb: Arc<Peb>) -> Result<Self, std::io::Error>
     where
         F: FnOnce() + Send + 'static,
     {
@@ -78,7 +83,27 @@ impl WispThread {
         let join = thread::Builder::new()
             .name("wisp-thread".into())
             .spawn(move || {
+                let thread_id = unsafe { libc::syscall(libc::SYS_gettid) as u64 };
+                let process_id = std::process::id() as u64;
+                let mut teb = Teb::new(&peb, process_id, thread_id);
+
+                if let Some((stack_base, stack_limit)) = crate::teb::current_stack_bounds() {
+                    teb.set_stack_bounds(stack_base, stack_limit);
+                }
+
+                let guard = match teb.install() {
+                    Ok(guard) => guard,
+                    Err(error) => {
+                        eprintln!("wisp: failed to install TEB: {error}");
+                        if let Ok(mut state) = state_for_thread.lock() {
+                            *state = ThreadState::Exited;
+                        }
+                        return;
+                    }
+                };
+
                 f();
+                drop(guard);
                 if let Ok(mut state) = state_for_thread.lock() {
                     *state = ThreadState::Exited;
                 }
@@ -112,6 +137,33 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn thread_bootstraps_teb() {
+        let process = WispProcess::new();
+        let observed = Arc::new(AtomicBool::new(false));
+        let observed_thread = Arc::clone(&observed);
+        let peb = Arc::clone(process.peb());
+
+        let handle = process
+            .create_thread(move || {
+                let teb = crate::teb::current_teb_base();
+                let current_peb = crate::teb::current_peb_base();
+                if !teb.is_null() && current_peb == peb.as_ptr() {
+                    observed_thread.store(true, Ordering::Release);
+                }
+                thread::sleep(Duration::from_millis(5));
+            })
+            .expect("thread creation should succeed");
+
+        process
+            .wait_thread(handle)
+            .expect("thread handle should exist")
+            .expect("thread should exit cleanly");
+        assert!(observed.load(Ordering::Acquire));
+        assert!(process.close_thread(handle));
+    }
 
     #[test]
     fn thread_lifecycle_is_linux_backed() {
