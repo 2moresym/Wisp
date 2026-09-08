@@ -1,0 +1,11 @@
+[package]
+name = "wisp-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wisp-core = { path = "../wisp-core" }
+wisp-pe-loader = { path = "../wisp-pe-loader" }
+libc.workspace = true
+thiserror.workspace = true
