@@ -40,7 +40,7 @@ pub struct Teb<'p> {
 
 pub struct TebGuard<'a> {
     previous_gs: usize,
-    teb: *const Teb<'a>,
+    installed_gs: usize,
     active: bool,
     _pin: PhantomData<&'a Teb<'a>>,
 }
@@ -108,9 +108,10 @@ impl<'p> Teb<'p> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     pub fn install(&self) -> io::Result<TebGuard<'_>> {
         let previous_gs = get_gs()?;
-        let rc = unsafe { libc::syscall(libc::SYS_arch_prctl, ARCH_SET_GS, self.as_ptr() as usize) };
+        let installed_gs = self.as_ptr() as usize;
+        let rc = unsafe { libc::syscall(libc::SYS_arch_prctl, ARCH_SET_GS, installed_gs) };
         if rc != 0 { return Err(io::Error::last_os_error()); }
-        Ok(TebGuard { previous_gs, teb: self, active: true, _pin: PhantomData })
+        Ok(TebGuard { previous_gs, installed_gs, active: true, _pin: PhantomData })
     }
 
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
@@ -151,7 +152,7 @@ impl Drop for TebGuard<'_> {
         if !self.active { return; }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         if let Ok(current) = get_gs() {
-            if current == self.teb as usize {
+            if current == self.installed_gs {
                 let _ = unsafe { libc::syscall(libc::SYS_arch_prctl, ARCH_SET_GS, self.previous_gs) };
             }
         }
