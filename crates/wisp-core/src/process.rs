@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -123,7 +124,7 @@ impl WispThread {
                     }
                 };
 
-                f();
+                let _ = panic::catch_unwind(AssertUnwindSafe(f));
                 drop(guard);
                 if let Ok(mut state) = state_for_thread.lock() {
                     *state = ThreadState::Exited;
@@ -207,7 +208,6 @@ mod tests {
             .expect("thread handle should exist")
             .expect("thread should exit cleanly");
         assert!(seen.load(Ordering::Acquire));
-        // TLS belongs to each thread; the creating thread's slot remains zero.
         assert_eq!(crate::tls::current_get(index), 0);
         assert!(process.tls_free(index));
     }
@@ -237,5 +237,18 @@ mod tests {
         assert_eq!(process.thread_state(handle), Some(ThreadState::Exited));
         assert!(process.close_thread(handle));
         assert_eq!(process.thread_state(handle), None);
+    }
+
+    #[test]
+    fn panic_still_transitions_thread_to_exited() {
+        let process = WispProcess::new();
+        let handle = process
+            .create_thread(|| panic!("intentional Wisp thread test panic"))
+            .expect("thread creation should succeed");
+
+        let result = process.wait_thread(handle).expect("thread handle should exist");
+        assert!(result.is_ok(), "bootstrap catches thread panics intentionally");
+        assert_eq!(process.thread_state(handle), Some(ThreadState::Exited));
+        assert!(process.close_thread(handle));
     }
 }
