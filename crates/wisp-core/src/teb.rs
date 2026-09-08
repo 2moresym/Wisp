@@ -5,7 +5,7 @@
 //! is executing. Only compatibility-contract fields are represented directly;
 //! the remaining Windows TEB stays opaque until a field is required.
 
-use std::{io, mem::size_of, pin::Pin, ptr, marker::PhantomData};
+use std::{io, marker::PhantomData, mem::size_of, pin::Pin, ptr};
 
 use crate::Peb;
 
@@ -29,23 +29,28 @@ const ARCH_GET_GS: libc::c_long = 0x1004;
 #[repr(align(16))]
 struct TebBytes([u8; TEB_SIZE]);
 
-pub struct Teb {
+/// A TEB is tied to the lifetime of the PEB pointer stored inside it. The
+/// byte backing is pinned so installing the TEB into GS cannot be invalidated
+/// by moving the owning Rust struct.
+pub struct Teb<'p> {
     bytes: Pin<Box<TebBytes>>,
     tls_expansion: Box<[usize; TEB_TLS_EXPANSION_SLOTS]>,
+    _peb: PhantomData<&'p Peb>,
 }
 
 pub struct TebGuard<'a> {
     previous_gs: usize,
-    teb: *const Teb,
+    teb: *const Teb<'a>,
     active: bool,
-    _pin: PhantomData<&'a Teb>,
+    _pin: PhantomData<&'a Teb<'a>>,
 }
 
-impl Teb {
-    pub fn new(peb: &Peb, process_id: u64, thread_id: u64) -> Self {
+impl<'p> Teb<'p> {
+    pub fn new(peb: &'p Peb, process_id: u64, thread_id: u64) -> Self {
         let mut teb = Self {
             bytes: Box::pin(TebBytes([0; TEB_SIZE])),
             tls_expansion: Box::new([0; TEB_TLS_EXPANSION_SLOTS]),
+            _peb: PhantomData,
         };
         let base = teb.as_ptr();
         let tls_slots = teb.tls_slots_ptr();
@@ -102,11 +107,10 @@ impl Teb {
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     pub fn install(&self) -> io::Result<TebGuard<'_>> {
-        let current = get_gs()?;
-        let expected_previous = current;
+        let previous_gs = get_gs()?;
         let rc = unsafe { libc::syscall(libc::SYS_arch_prctl, ARCH_SET_GS, self.as_ptr() as usize) };
         if rc != 0 { return Err(io::Error::last_os_error()); }
-        Ok(TebGuard { previous_gs: expected_previous, teb: self, active: true, _pin: PhantomData })
+        Ok(TebGuard { previous_gs, teb: self, active: true, _pin: PhantomData })
     }
 
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
@@ -234,10 +238,9 @@ mod tests {
         let teb = Teb::new(&peb, 1, 1);
         let other = Teb::new(&peb, 1, 2);
         let guard = teb.install().unwrap();
-        let _foreign = other.install().unwrap();
+        let foreign = other.install().unwrap();
         drop(guard);
         assert_eq!(current_teb_base(), other.as_ptr());
-        // Restore the test thread's original GS through the surviving guard.
-        drop(_foreign);
+        drop(foreign);
     }
 }
