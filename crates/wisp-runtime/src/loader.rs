@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use wisp_core::{Module, ModuleRegistry, ModuleState};
+use wisp_core::{Module, ModuleRegistry, ModuleState, WispProcess};
 use wisp_pe_loader::{dependency_paths, inspect, map_image, MappedImage, PeError, PeImage};
 
+use crate::builtin;
 use crate::exports::{parse_exports, ExportTarget};
 use crate::imports::{parse_import_bindings, ImportBinding, ImportSymbol};
+use crate::win32;
 
 #[derive(Debug)]
 pub enum RuntimeLoaderError {
@@ -44,14 +46,18 @@ pub struct LoadedModule {
 pub struct RuntimeLoader {
     modules: RwLock<HashMap<String, Arc<LoadedModule>>>,
     registry: Arc<ModuleRegistry>,
+    process: Arc<WispProcess>,
 }
 
 impl RuntimeLoader {
     pub fn new() -> Self {
-        Self { modules: RwLock::new(HashMap::new()), registry: Arc::new(ModuleRegistry::new()) }
+        let process = WispProcess::new();
+        win32::install_process(Arc::clone(&process));
+        Self { modules: RwLock::new(HashMap::new()), registry: Arc::new(ModuleRegistry::new()), process }
     }
 
     pub fn registry(&self) -> &Arc<ModuleRegistry> { &self.registry }
+    pub fn process(&self) -> &Arc<WispProcess> { &self.process }
 
     pub fn module(&self, name: &str) -> Option<Arc<LoadedModule>> {
         self.modules.read().expect("runtime module lock poisoned").get(&normalize_name(name)).cloned()
@@ -59,6 +65,7 @@ impl RuntimeLoader {
 
     pub fn load_executable(&self, path: impl AsRef<Path>) -> Result<Arc<LoadedModule>, RuntimeLoaderError> {
         let main = self.load_recursive(path.as_ref(), &mut Vec::new())?;
+        win32::set_current_image_base(main.image.base());
         let data = std::fs::read(path.as_ref())?;
         let bindings = parse_import_bindings(&data, &main.pe)?;
         self.bind_imports(&main, &bindings, &mut Vec::new())?;
@@ -70,12 +77,15 @@ impl RuntimeLoader {
         let name = path.file_name().and_then(|n| n.to_str()).ok_or(RuntimeLoaderError::Malformed("module filename"))?;
         let key = normalize_name(name);
         if let Some(existing) = self.module(&key) { return Ok(existing); }
-        if stack.iter().any(|n| n == &key) { return Err(RuntimeLoaderError::Malformed("dependency cycle reached during load")); }
+        if stack.iter().any(|n| n.eq_ignore_ascii_case(&key)) { return Err(RuntimeLoaderError::Malformed("dependency cycle reached during load")); }
         stack.push(key.clone());
 
-        for (_, dependency) in dependency_paths(path, &pe) {
-            let dep_path = dependency.ok_or_else(|| RuntimeLoaderError::MissingModule("unresolved dependency".into()))?;
-            let _ = self.load_recursive(&dep_path, stack)?;
+        for (dll_name, dependency) in dependency_paths(path, &pe) {
+            match dependency {
+                Some(dep_path) => { let _ = self.load_recursive(&dep_path, stack)?; }
+                None if builtin::is_builtin(&dll_name) => {}
+                None => { stack.pop(); return Err(RuntimeLoaderError::MissingModule(dll_name)); }
+            }
         }
 
         let mapped = Arc::new(map_image(path)?);
@@ -99,8 +109,14 @@ impl RuntimeLoader {
 
     fn bind_imports(&self, main: &LoadedModule, bindings: &[ImportBinding], stack: &mut Vec<String>) -> Result<(), RuntimeLoaderError> {
         for binding in bindings {
-            let module = self.module(&binding.dll).ok_or_else(|| RuntimeLoaderError::MissingModule(binding.dll.clone()))?;
-            let address = self.resolve_binding(&module, &binding.symbol, stack)?;
+            let address = if let Some(module) = self.module(&binding.dll) {
+                self.resolve_binding(&module, &binding.symbol, stack)?
+            } else {
+                match &binding.symbol {
+                    ImportSymbol::Name { name, .. } => builtin::address(&binding.dll, name).ok_or_else(|| RuntimeLoaderError::MissingExport { module: binding.dll.clone(), symbol: name.clone() })?,
+                    ImportSymbol::Ordinal(n) => builtin::address_by_handle(builtin::module_handle(&binding.dll).unwrap_or(0), &format!("#{n}")).ok_or_else(|| RuntimeLoaderError::MissingExport { module: binding.dll.clone(), symbol: format!("#{n}") })?,
+                }
+            };
             patch_iat(&main.image, &main.pe, binding.iat_rva, address)?;
         }
         Ok(())
@@ -129,15 +145,10 @@ impl RuntimeLoader {
 
 impl Default for RuntimeLoader { fn default() -> Self { Self::new() } }
 
-fn format_symbol(symbol: &ImportSymbol) -> String {
-    match symbol { ImportSymbol::Name { name, .. } => name.clone(), ImportSymbol::Ordinal(n) => format!("#{n}") }
-}
+fn format_symbol(symbol: &ImportSymbol) -> String { match symbol { ImportSymbol::Name { name, .. } => name.clone(), ImportSymbol::Ordinal(n) => format!("#{n}") } }
 
 #[inline]
-pub fn normalize_name(name: &str) -> String {
-    let name = name.replace('\\', "/");
-    name.rsplit('/').next().unwrap_or(&name).to_ascii_lowercase()
-}
+pub fn normalize_name(name: &str) -> String { let name = name.replace('\\', "/"); name.rsplit('/').next().unwrap_or(&name).to_ascii_lowercase() }
 
 fn section_protection(characteristics: u32) -> i32 {
     let mut prot = 0;
@@ -150,28 +161,48 @@ fn section_protection(characteristics: u32) -> i32 {
 fn patch_iat(image: &MappedImage, pe: &PeImage, rva: u32, value: u64) -> Result<(), RuntimeLoaderError> {
     let end = u64::from(rva).checked_add(8).ok_or(RuntimeLoaderError::Malformed("IAT range overflow"))?;
     if end > u64::from(pe.size_of_image) { return Err(RuntimeLoaderError::Malformed("IAT outside mapped image")); }
+    let offset = usize::try_from(rva).map_err(|_| RuntimeLoaderError::Malformed("IAT address overflow"))?;
+    let end_offset = offset.checked_add(8).ok_or(RuntimeLoaderError::Malformed("IAT address overflow"))?;
+    let page_start = offset & !4095usize;
+    let page_end = (end_offset.saturating_sub(1)) & !4095usize;
     let section = pe.sections.iter().find(|s| {
         let start = u64::from(s.virtual_address);
         let span = u64::from(s.virtual_size.max(s.raw_size));
         u64::from(rva) >= start && end <= start.saturating_add(span)
     }).ok_or(RuntimeLoaderError::Malformed("IAT not inside a section"))?;
-    let offset = usize::try_from(rva).map_err(|_| RuntimeLoaderError::Malformed("IAT address overflow"))?;
-    let page = offset & !4095usize;
-    let page_addr = unsafe { image.as_ptr().add(page) };
-    let addr = unsafe { image.as_ptr().add(offset) };
     let restore = section_protection(section.characteristics);
-    if unsafe { libc::mprotect(page_addr.cast(), 4096, libc::PROT_READ | libc::PROT_WRITE) } != 0 { return Err(std::io::Error::last_os_error().into()); }
-    unsafe { std::ptr::write_unaligned(addr.cast::<u64>(), value); }
-    if unsafe { libc::mprotect(page_addr.cast(), 4096, restore) } != 0 { return Err(std::io::Error::last_os_error().into()); }
+    let make_rw = |page: usize| -> Result<(), RuntimeLoaderError> {
+        let addr = unsafe { image.as_ptr().add(page) };
+        if unsafe { libc::mprotect(addr.cast(), 4096, libc::PROT_READ | libc::PROT_WRITE) } != 0 { return Err(std::io::Error::last_os_error().into()); }
+        Ok(())
+    };
+    make_rw(page_start)?;
+    if page_end != page_start { make_rw(page_end)?; }
+    unsafe { std::ptr::write_unaligned(image.as_ptr().add(offset).cast::<u64>(), value); }
+    let restore_page = |page: usize| -> Result<(), RuntimeLoaderError> {
+        let addr = unsafe { image.as_ptr().add(page) };
+        if unsafe { libc::mprotect(addr.cast(), 4096, restore) } != 0 { return Err(std::io::Error::last_os_error().into()); }
+        Ok(())
+    };
+    restore_page(page_start)?;
+    if page_end != page_start { restore_page(page_end)?; }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn normalizes_module_names() {
         assert_eq!(normalize_name("C:\\Games\\FOO.DLL"), "foo.dll");
         assert_eq!(normalize_name("foo.dll"), "foo.dll");
+    }
+
+    #[test]
+    fn builtin_modules_are_recognized() {
+        assert!(builtin::is_builtin("KERNEL32.DLL"));
+        assert!(builtin::is_builtin("ntdll.dll"));
+        assert!(!builtin::is_builtin("user32.dll"));
     }
 }
