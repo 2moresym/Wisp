@@ -46,15 +46,14 @@ impl Teb {
             tls_expansion: Box::new([0; TEB_TLS_EXPANSION_SLOTS]),
         };
         let base = teb.as_ptr();
+        let tls_slots = teb.tls_slots_ptr();
+        let tls_expansion = teb.tls_expansion.as_mut_ptr() as *mut u8;
         teb.write_ptr(TEB_SELF_OFFSET, base);
         teb.write_ptr(TEB_PEB_OFFSET, peb.as_ptr());
         teb.write_u64(TEB_CLIENT_ID_PROCESS_OFFSET, process_id);
         teb.write_u64(TEB_CLIENT_ID_THREAD_OFFSET, thread_id);
-        teb.write_ptr(TEB_TLS_POINTER_OFFSET, teb.tls_slots_ptr());
-        teb.write_ptr(
-            TEB_TLS_EXPANSION_POINTER_OFFSET,
-            teb.tls_expansion.as_mut_ptr() as *mut u8,
-        );
+        teb.write_ptr(TEB_TLS_POINTER_OFFSET, tls_slots);
+        teb.write_ptr(TEB_TLS_EXPANSION_POINTER_OFFSET, tls_expansion);
         teb
     }
 
