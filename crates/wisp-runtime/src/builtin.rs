@@ -15,27 +15,15 @@ pub fn module_handle(name: &str) -> Option<u64> {
 #[inline]
 pub fn is_builtin(name: &str) -> bool { module_handle(name).is_some() }
 
+#[inline]
 pub fn address(module: &str, symbol: &str) -> Option<u64> {
-    if !is_builtin(module) { return None; }
-    macro_rules! addr {
-        ($name:literal, $fn_name:ident) => {
-            if symbol.eq_ignore_ascii_case($name) { return Some(win32::$fn_name as usize as u64); }
-        };
+    module_handle(module).and_then(|_| win32::abi_address(symbol))
+}
+
+#[inline]
+pub fn address_by_handle(module: u64, symbol: &str) -> Option<u64> {
+    match module {
+        NTDLL_HANDLE | KERNEL32_HANDLE => win32::abi_address(symbol),
+        _ => None,
     }
-    addr!("GetLastError", wisp_abi_GetLastError);
-    addr!("SetLastError", wisp_abi_SetLastError);
-    addr!("VirtualAlloc", wisp_abi_VirtualAlloc);
-    addr!("VirtualProtect", wisp_abi_VirtualProtect);
-    addr!("TlsAlloc", wisp_abi_TlsAlloc);
-    addr!("TlsFree", wisp_abi_TlsFree);
-    addr!("TlsGetValue", wisp_abi_TlsGetValue);
-    addr!("TlsSetValue", wisp_abi_TlsSetValue);
-    addr!("CreateThread", wisp_abi_CreateThread);
-    addr!("WaitForSingleObject", wisp_abi_WaitForSingleObject);
-    addr!("CloseHandle", wisp_abi_CloseHandle);
-    addr!("GetModuleHandleA", wisp_abi_GetModuleHandleA);
-    addr!("GetModuleHandleW", wisp_abi_GetModuleHandleW);
-    addr!("GetProcAddress", wisp_abi_GetProcAddress);
-    addr!("ExitProcess", wisp_abi_ExitProcess);
-    None
 }
