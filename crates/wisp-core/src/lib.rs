@@ -1,10 +1,12 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod handle;
+pub mod process;
 pub mod sync;
 pub mod vfs;
 
 pub use handle::{Handle, HandleTable};
+pub use process::{ThreadState, WispProcess};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
