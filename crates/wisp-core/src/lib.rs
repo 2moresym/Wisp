@@ -5,12 +5,14 @@ pub mod peb;
 pub mod process;
 pub mod sync;
 pub mod teb;
+pub mod tls;
 pub mod vfs;
 
 pub use handle::{Handle, HandleTable};
 pub use peb::Peb;
 pub use process::{ThreadState, WispProcess};
 pub use teb::{Teb, TebGuard, TEB_PEB_OFFSET, TEB_SELF_OFFSET};
+pub use tls::{TlsManager, TLS_MAXIMUM_AVAILABLE, TLS_MINIMUM_AVAILABLE, TLS_OUT_OF_INDEXES};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
