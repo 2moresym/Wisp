@@ -20,7 +20,6 @@ pub const WAIT_INFINITE: u32 = 0xffff_ffff;
 pub const TLS_OUT_OF_INDEXES: u32 = 0xffff_ffff;
 pub const ERROR_SUCCESS: u32 = 0;
 pub const ERROR_INVALID_FUNCTION: u32 = 1;
-pub const ERROR_FILE_NOT_FOUND: u32 = 2;
 pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
 pub const ERROR_INVALID_PARAMETER: u32 = 87;
 pub const ERROR_NOACCESS: u32 = 998;
@@ -97,23 +96,19 @@ pub fn virtual_protect(address: *mut c_void, size: usize, protection: u32, old: 
     true
 }
 
-pub fn tls_alloc(process: &WispProcess) -> u32 {
-    process.tls_alloc().map(|v| v as u32).unwrap_or(TLS_OUT_OF_INDEXES)
-}
+pub fn tls_alloc(process: &WispProcess) -> u32 { process.tls_alloc().map(|v| v as u32).unwrap_or(TLS_OUT_OF_INDEXES) }
 pub fn tls_free(process: &WispProcess, index: u32) -> bool { process.tls_free(index as usize) }
 pub fn tls_get_value(process: &WispProcess, index: u32) -> usize { process.tls_get_value(index as usize).unwrap_or(0) }
 pub fn tls_set_value(process: &WispProcess, index: u32, value: usize) -> bool { process.tls_set_value(index as usize, value) }
 
-pub type ThreadStart = usize;
-
-pub fn create_thread(process: &Arc<WispProcess>, start: ThreadStart, parameter: *mut c_void) -> Result<Handle, std::io::Error> {
+pub fn create_thread(process: &Arc<WispProcess>, start: usize, parameter: *mut c_void) -> Result<Handle, std::io::Error> {
     let parameter = parameter as usize;
     process.create_thread(move || {
         unsafe { wisp_invoke_thread_start_msabi(start, parameter as *mut c_void); }
     })
 }
 
-extern "C" {
+unsafe extern "C" {
     fn wisp_invoke_thread_start_msabi(start: usize, parameter: *mut c_void) -> u32;
     fn wisp_abi_GetLastError() -> u32;
     fn wisp_abi_SetLastError(value: u32);
@@ -132,115 +127,55 @@ extern "C" {
     fn wisp_abi_ExitProcess(code: u32);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_GetLastError() -> u32 { get_last_error() }
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_SetLastError(value: u32) { set_last_error(value); }
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_VirtualAlloc(address: *mut c_void, size: usize, allocation_type: u32, protection: u32) -> *mut c_void { virtual_alloc(address, size, allocation_type, protection) }
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_VirtualProtect(address: *mut c_void, size: usize, protection: u32, old: *mut u32) -> i32 {
+#[inline]
+pub fn abi_address(symbol: &str) -> Option<u64> {
+    macro_rules! addr { ($name:literal, $fn_name:ident) => { if symbol.eq_ignore_ascii_case($name) { return Some($fn_name as usize as u64); } }; }
+    unsafe {
+        addr!("GetLastError", wisp_abi_GetLastError);
+        addr!("SetLastError", wisp_abi_SetLastError);
+        addr!("VirtualAlloc", wisp_abi_VirtualAlloc);
+        addr!("VirtualProtect", wisp_abi_VirtualProtect);
+        addr!("TlsAlloc", wisp_abi_TlsAlloc);
+        addr!("TlsFree", wisp_abi_TlsFree);
+        addr!("TlsGetValue", wisp_abi_TlsGetValue);
+        addr!("TlsSetValue", wisp_abi_TlsSetValue);
+        addr!("CreateThread", wisp_abi_CreateThread);
+        addr!("WaitForSingleObject", wisp_abi_WaitForSingleObject);
+        addr!("CloseHandle", wisp_abi_CloseHandle);
+        addr!("GetModuleHandleA", wisp_abi_GetModuleHandleA);
+        addr!("GetModuleHandleW", wisp_abi_GetModuleHandleW);
+        addr!("GetProcAddress", wisp_abi_GetProcAddress);
+        addr!("ExitProcess", wisp_abi_ExitProcess);
+    }
+    None
+}
+
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_GetLastError() -> u32 { get_last_error() }
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_SetLastError(value: u32) { set_last_error(value); }
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_VirtualAlloc(address: *mut c_void, size: usize, allocation_type: u32, protection: u32) -> *mut c_void { virtual_alloc(address, size, allocation_type, protection) }
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_VirtualProtect(address: *mut c_void, size: usize, protection: u32, old: *mut u32) -> i32 {
     if old.is_null() { set_last_error(ERROR_INVALID_PARAMETER); return 0; }
-    let result = unsafe { virtual_protect(address, size, protection, &mut *old) };
-    i32::from(result)
+    i32::from(unsafe { virtual_protect(address, size, protection, &mut *old) })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_TlsAlloc() -> u32 {
-    let Some(process) = current_process() else { set_last_error(ERROR_NOT_ENOUGH_MEMORY); return TLS_OUT_OF_INDEXES; };
-    tls_alloc(&process)
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_TlsFree(index: u32) -> i32 {
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_TlsAlloc() -> u32 { current_process().map_or(TLS_OUT_OF_INDEXES, |p| tls_alloc(&p)) }
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_TlsFree(index: u32) -> i32 { current_process().map_or(0, |p| i32::from(tls_free(&p, index))) }
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_TlsGetValue(index: u32) -> *mut c_void { current_process().map_or(std::ptr::null_mut(), |p| tls_get_value(&p, index) as *mut c_void) }
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_TlsSetValue(index: u32, value: *mut c_void) -> i32 { current_process().map_or(0, |p| i32::from(tls_set_value(&p, index, value as usize))) }
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_CreateThread(start: usize, parameter: *mut c_void, _flags: u32, thread_id: *mut u32) -> usize {
     let Some(process) = current_process() else { set_last_error(ERROR_INVALID_FUNCTION); return 0; };
-    i32::from(tls_free(&process, index))
+    match create_thread(&process, start, parameter) { Ok(handle) => { if !thread_id.is_null() { unsafe { *thread_id = NEXT_TID.fetch_add(1, std::sync::atomic::Ordering::Relaxed); } } set_last_error(ERROR_SUCCESS); handle.0 as usize }, Err(_) => { set_last_error(ERROR_NOT_ENOUGH_MEMORY); 0 } }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_TlsGetValue(index: u32) -> *mut c_void {
-    let Some(process) = current_process() else { set_last_error(ERROR_INVALID_FUNCTION); return std::ptr::null_mut(); };
-    let value = tls_get_value(&process, index);
-    set_last_error(ERROR_SUCCESS);
-    value as *mut c_void
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_TlsSetValue(index: u32, value: *mut c_void) -> i32 {
-    let Some(process) = current_process() else { set_last_error(ERROR_INVALID_FUNCTION); return 0; };
-    let ok = tls_set_value(&process, index, value as usize);
-    if !ok { set_last_error(ERROR_INVALID_PARAMETER); }
-    i32::from(ok)
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_CreateThread(start: usize, parameter: *mut c_void, _flags: u32, thread_id: *mut u32) -> usize {
-    let Some(process) = current_process() else { set_last_error(ERROR_INVALID_FUNCTION); return 0; };
-    match create_thread(&process, start, parameter) {
-        Ok(handle) => {
-            if !thread_id.is_null() { unsafe { *thread_id = NEXT_TID.fetch_add(1, std::sync::atomic::Ordering::Relaxed); } }
-            set_last_error(ERROR_SUCCESS);
-            handle.0 as usize
-        }
-        Err(_) => { set_last_error(ERROR_NOT_ENOUGH_MEMORY); 0 }
-    }
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_WaitForSingleObject(handle: usize, milliseconds: u32) -> u32 {
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_WaitForSingleObject(handle: usize, milliseconds: u32) -> u32 {
     let Some(process) = current_process() else { set_last_error(ERROR_INVALID_FUNCTION); return WAIT_FAILED; };
-    let h = Handle(handle as u32);
-    let start = Instant::now();
-    loop {
-        match process.thread_state(h) {
-            Some(wisp_core::ThreadState::Exited) => {
-                let _ = process.wait_thread(h);
-                set_last_error(ERROR_SUCCESS);
-                return WAIT_OBJECT_0;
-            }
-            Some(wisp_core::ThreadState::Running) => {
-                if milliseconds == 0 { set_last_error(ERROR_SUCCESS); return WAIT_TIMEOUT; }
-                if milliseconds != WAIT_INFINITE && start.elapsed() >= Duration::from_millis(milliseconds as u64) {
-                    set_last_error(ERROR_SUCCESS);
-                    return WAIT_TIMEOUT;
-                }
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            None => { set_last_error(ERROR_INVALID_PARAMETER); return WAIT_FAILED; }
-        }
-    }
+    let h = Handle(handle as u32); let start = Instant::now();
+    loop { match process.thread_state(h) {
+        Some(wisp_core::ThreadState::Exited) => { let _ = process.wait_thread(h); set_last_error(ERROR_SUCCESS); return WAIT_OBJECT_0; }
+        Some(wisp_core::ThreadState::Running) => { if milliseconds == 0 { return WAIT_TIMEOUT; } if milliseconds != WAIT_INFINITE && start.elapsed() >= Duration::from_millis(milliseconds as u64) { return WAIT_TIMEOUT; } std::thread::sleep(Duration::from_millis(1)); }
+        None => { set_last_error(ERROR_INVALID_PARAMETER); return WAIT_FAILED; }
+    }}
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_CloseHandle(handle: usize) -> i32 {
-    let Some(process) = current_process() else { set_last_error(ERROR_INVALID_FUNCTION); return 0; };
-    let ok = process.close_thread(Handle(handle as u32));
-    if !ok { set_last_error(ERROR_INVALID_PARAMETER); }
-    i32::from(ok)
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_GetModuleHandleA(name: *const c_char) -> usize {
-    if name.is_null() { return current_image_base() as usize; }
-    let name = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-    crate::builtin::module_handle(&name).unwrap_or(0) as usize
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_GetModuleHandleW(name: *const u16) -> usize {
-    if name.is_null() { return current_image_base() as usize; }
-    let mut units = Vec::new();
-    for i in 0..32768usize {
-        let ch = unsafe { *name.add(i) };
-        if ch == 0 { break; }
-        units.push(ch);
-    }
-    let text = String::from_utf16_lossy(&units);
-    crate::builtin::module_handle(&text).unwrap_or(0) as usize
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_GetProcAddress(module: usize, name: *const c_char) -> usize {
-    if name.is_null() { return 0; }
-    let ordinal = name as usize;
-    if ordinal <= u16::MAX as usize {
-        let sym = format!("#{ordinal}");
-        if module == crate::builtin::KERNEL32_HANDLE || module == crate::builtin::NTDLL_HANDLE {
-            return crate::builtin::address_handle(module, &sym).unwrap_or(0) as usize;
-        }
-    }
-    let symbol = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-    crate::builtin::address_by_handle(module, &symbol).unwrap_or(0) as usize
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn wisp_impl_ExitProcess(code: u32) -> ! { std::process::exit(code as i32) }
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_CloseHandle(handle: usize) -> i32 { current_process().map_or(0, |p| i32::from(p.close_thread(Handle(handle as u32)))) }
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_GetModuleHandleA(name: *const c_char) -> usize { if name.is_null() { return current_image_base() as usize; } let n = unsafe { CStr::from_ptr(name) }.to_string_lossy(); crate::builtin::module_handle(&n).unwrap_or(0) as usize }
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_GetModuleHandleW(name: *const u16) -> usize { if name.is_null() { return current_image_base() as usize; } let mut units = Vec::new(); for i in 0..32768usize { let ch = unsafe { *name.add(i) }; if ch == 0 { break; } units.push(ch); } let n = String::from_utf16_lossy(&units); crate::builtin::module_handle(&n).unwrap_or(0) as usize }
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_GetProcAddress(module: usize, name: *const c_char) -> usize { if name.is_null() { return 0; } if (name as usize) <= u16::MAX as usize { return crate::builtin::address_by_handle(module, &format!("#{}", name as usize)).unwrap_or(0) as usize; } let n = unsafe { CStr::from_ptr(name) }.to_string_lossy(); crate::builtin::address_by_handle(module, &n).unwrap_or(0) as usize }
+#[unsafe(no_mangle)] pub extern "C" fn wisp_impl_ExitProcess(code: u32) -> ! { std::process::exit(code as i32) }
