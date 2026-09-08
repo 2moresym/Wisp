@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use crate::{Handle, HandleTable, Peb, Teb};
+use crate::{Handle, HandleTable, Peb, Teb, TlsManager};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadState {
@@ -13,6 +13,7 @@ pub enum ThreadState {
 pub struct WispProcess {
     handles: HandleTable,
     peb: Arc<Peb>,
+    tls: TlsManager,
     threads: Mutex<HashMap<Handle, Arc<WispThread>>>,
 }
 
@@ -21,12 +22,32 @@ impl WispProcess {
         Arc::new(Self {
             handles: HandleTable::new(),
             peb: Arc::new(Peb::new()),
+            tls: TlsManager::new(),
             threads: Mutex::new(HashMap::new()),
         })
     }
 
     #[inline]
     pub fn peb(&self) -> &Arc<Peb> { &self.peb }
+
+    #[inline]
+    pub fn tls_alloc(&self) -> Option<usize> { self.tls.alloc() }
+
+    #[inline]
+    pub fn tls_free(&self, index: usize) -> bool { self.tls.free(index) }
+
+    #[inline]
+    pub fn tls_index_allocated(&self, index: usize) -> bool { self.tls.is_allocated(index) }
+
+    #[inline]
+    pub fn tls_get_value(&self, index: usize) -> Option<usize> {
+        self.tls.is_allocated(index).then(|| crate::tls::current_get(index))
+    }
+
+    #[inline]
+    pub fn tls_set_value(&self, index: usize, value: usize) -> bool {
+        self.tls.is_allocated(index) && crate::tls::current_set(index, value)
+    }
 
     pub fn create_thread<F>(self: &Arc<Self>, f: F) -> Result<Handle, std::io::Error>
     where
@@ -163,6 +184,32 @@ mod tests {
             .expect("thread should exit cleanly");
         assert!(observed.load(Ordering::Acquire));
         assert!(process.close_thread(handle));
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn tls_values_are_thread_local() {
+        let process = WispProcess::new();
+        let index = process.tls_alloc().expect("TLS index should allocate");
+        let seen = Arc::new(AtomicBool::new(false));
+        let seen_thread = Arc::clone(&seen);
+
+        let handle = process
+            .create_thread(move || {
+                assert!(crate::tls::current_set(index, 0x1234));
+                assert_eq!(crate::tls::current_get(index), 0x1234);
+                seen_thread.store(true, Ordering::Release);
+            })
+            .expect("thread creation should succeed");
+
+        process
+            .wait_thread(handle)
+            .expect("thread handle should exist")
+            .expect("thread should exit cleanly");
+        assert!(seen.load(Ordering::Acquire));
+        // TLS belongs to each thread; the creating thread's slot remains zero.
+        assert_eq!(crate::tls::current_get(index), 0);
+        assert!(process.tls_free(index));
     }
 
     #[test]
