@@ -5,7 +5,7 @@
 //! is executing. Only compatibility-contract fields are represented directly;
 //! the remaining Windows TEB stays opaque until a field is required.
 
-use std::{io, mem::size_of, ptr};
+use std::{io, mem::size_of, pin::Pin, ptr, marker::PhantomData};
 
 use crate::Peb;
 
@@ -30,19 +30,21 @@ const ARCH_GET_GS: libc::c_long = 0x1004;
 struct TebBytes([u8; TEB_SIZE]);
 
 pub struct Teb {
-    bytes: Box<TebBytes>,
+    bytes: Pin<Box<TebBytes>>,
     tls_expansion: Box<[usize; TEB_TLS_EXPANSION_SLOTS]>,
 }
 
-pub struct TebGuard {
+pub struct TebGuard<'a> {
     previous_gs: usize,
+    teb: *const Teb,
     active: bool,
+    _pin: PhantomData<&'a Teb>,
 }
 
 impl Teb {
     pub fn new(peb: &Peb, process_id: u64, thread_id: u64) -> Self {
         let mut teb = Self {
-            bytes: Box::new(TebBytes([0; TEB_SIZE])),
+            bytes: Box::pin(TebBytes([0; TEB_SIZE])),
             tls_expansion: Box::new([0; TEB_TLS_EXPANSION_SLOTS]),
         };
         let base = teb.as_ptr();
@@ -58,7 +60,7 @@ impl Teb {
     }
 
     #[inline]
-    pub fn as_ptr(&self) -> *mut u8 { self.bytes.0.as_ptr() as *mut u8 }
+    pub fn as_ptr(&self) -> *mut u8 { self.bytes.as_ref().get_ref().0.as_ptr() as *mut u8 }
 
     #[inline]
     pub fn tls_slots_ptr(&self) -> *mut u8 {
@@ -99,15 +101,16 @@ impl Teb {
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    pub fn install(&self) -> io::Result<TebGuard> {
-        let previous_gs = get_gs()?;
+    pub fn install(&self) -> io::Result<TebGuard<'_>> {
+        let current = get_gs()?;
+        let expected_previous = current;
         let rc = unsafe { libc::syscall(libc::SYS_arch_prctl, ARCH_SET_GS, self.as_ptr() as usize) };
         if rc != 0 { return Err(io::Error::last_os_error()); }
-        Ok(TebGuard { previous_gs, active: true })
+        Ok(TebGuard { previous_gs: expected_previous, teb: self, active: true, _pin: PhantomData })
     }
 
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-    pub fn install(&self) -> io::Result<TebGuard> {
+    pub fn install(&self) -> io::Result<TebGuard<'_>> {
         let _ = self;
         Err(io::Error::new(io::ErrorKind::Unsupported, "Wisp x64 TEB requires Linux x86-64"))
     }
@@ -134,16 +137,20 @@ impl Teb {
     fn write_ptr(&mut self, offset: usize, value: *mut u8) { self.write_u64(offset, value as usize as u64); }
 }
 
-impl TebGuard {
+impl<'a> TebGuard<'a> {
     #[inline]
     pub fn is_active(&self) -> bool { self.active }
 }
 
-impl Drop for TebGuard {
+impl Drop for TebGuard<'_> {
     fn drop(&mut self) {
         if !self.active { return; }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        let _ = unsafe { libc::syscall(libc::SYS_arch_prctl, ARCH_SET_GS, self.previous_gs) };
+        if let Ok(current) = get_gs() {
+            if current == self.teb as usize {
+                let _ = unsafe { libc::syscall(libc::SYS_arch_prctl, ARCH_SET_GS, self.previous_gs) };
+            }
+        }
         self.active = false;
     }
 }
@@ -204,5 +211,33 @@ mod tests {
         assert!(guard.is_active());
         drop(guard);
         assert_eq!(get_gs().expect("ARCH_GET_GS should work"), before);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn nested_guard_does_not_clobber_foreign_gs() {
+        let peb = Peb::new();
+        let teb_a = Teb::new(&peb, 1, 1);
+        let teb_b = Teb::new(&peb, 1, 2);
+        let outer = teb_a.install().unwrap();
+        let inner = teb_b.install().unwrap();
+        assert_eq!(current_teb_base(), teb_b.as_ptr());
+        drop(inner);
+        assert_eq!(current_teb_base(), teb_a.as_ptr());
+        drop(outer);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn guard_does_not_restore_over_foreign_gs() {
+        let peb = Peb::new();
+        let teb = Teb::new(&peb, 1, 1);
+        let other = Teb::new(&peb, 1, 2);
+        let guard = teb.install().unwrap();
+        let _foreign = other.install().unwrap();
+        drop(guard);
+        assert_eq!(current_teb_base(), other.as_ptr());
+        // Restore the test thread's original GS through the surviving guard.
+        drop(_foreign);
     }
 }
