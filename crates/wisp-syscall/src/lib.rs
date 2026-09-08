@@ -16,11 +16,7 @@ pub unsafe fn nt_allocate_virtual_memory(size: usize, prot: i32) -> *mut c_void 
             0,
         )
     };
-    if p == libc::MAP_FAILED {
-        std::ptr::null_mut()
-    } else {
-        p
-    }
+    if p == libc::MAP_FAILED { std::ptr::null_mut() } else { p }
 }
 
 #[inline]
@@ -34,8 +30,7 @@ pub type ThreadStart = extern "C" fn(*mut c_void);
 
 /// Create a Linux-backed thread and return its Wisp handle.
 ///
-/// This deliberately uses Rust's native thread implementation for now; the
-/// later NT ABI layer will replace the trampoline with explicit TEB/TLS setup.
+/// The Linux thread is bootstrapped with a Wisp TEB before the callback runs.
 pub fn nt_create_thread(
     process: &Arc<WispProcess>,
     start: ThreadStart,
@@ -51,7 +46,7 @@ pub fn nt_create_thread(
 pub fn nt_wait_for_single_object(
     process: &WispProcess,
     handle: Handle,
-) -> Result<bool, thread::Result<()>> {
+) -> Result<bool, std::thread::Result<()>> {
     match process.wait_thread(handle) {
         Some(result) => result.map(|()| true),
         None => Ok(false),
