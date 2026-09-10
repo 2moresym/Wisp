@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 wisp-pe-loader = { path = "../wisp-pe-loader" }
+wisp-runtime = { path = "../wisp-runtime" }
