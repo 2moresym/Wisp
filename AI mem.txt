@@ -1,0 +1,311 @@
+WISP AI HANDOFF / PROJECT MEMORY
+================================
+
+Repository: 2moresym/Wisp
+Goal: Minimal-overhead Windows x86_64 game compatibility layer for Linux.
+Language: Rust-first. Small C/C++ glue only where native Linux subsystem FFI is appropriate.
+Scope: 64-bit Windows games. Not a general Win32 compatibility layer. 32-bit/WoW64 and anti-cheat are out of initial scope.
+
+IMPORTANT FOR ANY AI TAKING OVER
+--------------------------------
+1. Work directly from the current GitHub repository/state. Do not assume this is a fresh project.
+2. Inspect existing code and git history before redesigning anything.
+3. Do not rewrite working subsystems just to change architecture.
+4. Preserve Windows-compatible semantics over superficial API breadth.
+5. Prefer small/medium commits for risky runtime changes. Every meaningful commit should build and test.
+6. Never claim a subsystem is complete when it is only a Linux-backed foundation.
+7. The project owner wants eventual game testing as soon as the runtime is capable, but correctness of the loader/thread/ABI foundations comes first.
+8. Wisp is Rust-based. Python may be used only as external analysis/tooling; project implementation belongs in Rust except intentional native glue.
+
+CURRENT VERIFIED LOCAL MILESTONE
+--------------------------------
+The owner has recently run cargo build --release and cargo test --release successfully after the TEB and runtime work. The preceding full suite had 22 tests passing with 0 failures. After the most recent handle-lifecycle patch, the owner is expected to re-run the suite to verify the latest commit.
+
+CURRENT RECENT COMMITS / STATE
+------------------------------
+Main progression includes:
+- PE loader foundation
+- Linux-backed process/thread lifecycle
+- TEB/PEB/TLS bootstrap
+- loader/module registry
+- case-insensitive VFS foundation
+- native Wayland/X11 windowing MVP
+- DLL/import/export foundation
+- Win32 foundation
+- ABI bridge groundwork
+- handle allocator hardening
+
+Recent important commits:
+- e744470: runtime: add DLL import/export and Win32 foundation
+- c042ff5: fix: correct Win32 thread function pointer syntax
+- 1752e55: fix: normalize Win32 module handle type
+- 0df497c: cleanup: fix Win32 ABI address warnings
+- 109849a: fix: correct NTSTATUS values
+- a5ec2f7: fix: harden TEB lifetime ownership
+- 48368b8: fix: correct TEB GS guard identity
+- 2c792d9: process: integrate recyclable handle lifecycle
+
+CURRENT ARCHITECTURE
+--------------------
+Workspace crates:
+- wisp-core
+- wisp-pe-loader
+- wisp-syscall
+- wisp-loader-cli
+- wisp-glue-c
+- wisp-window
+- wisp-runtime
+
+wisp-core contains the runtime foundation:
+- handle
+- loader state machine
+- module registry/dependency graph
+- peb
+- process/thread lifecycle
+- sync/futex foundation
+- teb
+- tls
+- vfs
+
+wisp-pe-loader is responsible for strict PE64 parsing/validation and image mapping.
+
+wisp-runtime is the higher-level loader/runtime bridge:
+- DLL search/admission
+- import metadata
+- export metadata
+- runtime loader
+- builtin module lookup
+- Win32 foundation
+
+wisp-syscall exposes NT-shaped entry points.
+wisp-window provides native Wayland/X11 windowing.
+wisp-glue-c is deliberately tiny native C glue.
+wisp-loader-cli is the current loader executable/smoke entry point.
+
+WHAT IS ACTUALLY WORKING
+-------------------------
+PE loader:
+- PE32+ / AMD64 parsing
+- strict bounds/checked arithmetic
+- section validation
+- relocation groundwork
+- preferred-base mapping with relocation fallback
+- dependency metadata parsing
+- simple dependency-free PE fixture execution
+- the original fixture executes its entry point and returns 42
+
+Memory:
+- mmap-backed image mapping
+- mprotect-backed protection changes
+- basic VirtualAlloc / VirtualProtect compatibility foundation
+- full Windows MEM_RESERVE/MEM_COMMIT/MEM_RELEASE semantics are NOT complete
+
+Process / threads:
+- WispProcess exists
+- Linux-backed thread creation using std::thread exists
+- Running/Exited state tracking
+- wait/join and close lifecycle
+- thread bootstrap installs a Wisp TEB
+- panic-safe transition to Exited
+- this is NOT yet a full Windows NT thread implementation
+
+TEB / PEB / TLS:
+- x86_64 Linux GS-based TEB installation
+- pinned TEB backing storage
+- lifetime-bound TEB guard
+- PEB anchor referenced from TEB
+- stack bounds discovered from pthread attributes
+- LastError storage
+- TLS manager with process-wide index allocation
+- per-thread inline TLS slots and expansion storage
+- GS guard checks the currently installed GS before restoring it
+- do not assume full Windows TEB field compatibility; only explicitly implemented fields are contractual
+
+Synchronization:
+- WaitWord spin-then-futex foundation
+- wait re-checks after wakeups
+- NTSYNC backend exists and is optional when /dev/ntsync is available
+- full Windows WaitOnAddress/SRWLock/CRITICAL_SECTION semantic compatibility is NOT complete
+
+Handles:
+- WispProcess currently has an actual Handle -> WispThread map for threads
+- HandleTable is improved with recyclable handle IDs, null-handle protection, overflow protection
+- generic typed NT object table is NOT complete yet
+
+Module/loader state:
+- ModuleRegistry with dependency graph
+- cycle detection
+- dependency-first initialization ordering
+- loader state machine enforces canonical phase transitions
+- export metadata supports name and ordinal lookup
+- runtime DLL path lookup is case-insensitive
+- this still needs actual end-to-end mapping/IAT patching/initialization integration for arbitrary DLLs
+
+VFS:
+- CaseMap / case-insensitive lookup foundation
+- exact-name lookup wins
+- invalidation and lazy-population groundwork
+- full Windows path/VFS behavior is NOT complete
+
+Windowing:
+- native Wayland MVP
+- native X11 MVP
+- backend detection
+- close/resize/input event foundations
+- native Wayland display/surface and X11 connection/window exposed for future WSI
+- Wayland currently uses SHM for smoke rendering, not Vulkan rendering
+- native Vulkan surface integration is NOT complete
+- input translation to Windows VK/DirectInput/XInput semantics is NOT complete
+
+DLL / import / export / ABI:
+- PE import descriptors and thunk metadata
+- export directory parsing
+- name/ordinal export lookup
+- DLL dependency resolution groundwork
+- builtin ntdll/kernel32 recognition
+- Win32 implementation foundation
+- Microsoft x64 ABI bridge groundwork via native glue/thunks
+- this still needs rigorous end-to-end imported-PE execution tests
+
+CURRENT WIN32 FOUNDATION
+------------------------
+Implemented/foundation APIs include:
+- GetLastError
+- SetLastError
+- VirtualAlloc
+- VirtualProtect
+- TlsAlloc
+- TlsFree
+- TlsGetValue
+- TlsSetValue
+- CreateThread foundation
+- WaitForSingleObject foundation
+- CloseHandle foundation
+- GetModuleHandleA/W foundation
+- GetProcAddress foundation
+- ExitProcess foundation
+
+These are NOT yet equivalent to all Windows edge semantics.
+
+KNOWN / INTENTIONAL LIMITATIONS
+-------------------------------
+- The PE loader CLI still explicitly refuses imported-PE execution until runtime integration is complete.
+- The simple PE fixture has no imports and no TLS, so loader ordering has not yet been validated with a realistic dependency graph + DllMain + TLS callbacks + CRT startup.
+- DllMain execution is not yet fully integrated.
+- PE TLS directory initialization/callback execution is not yet fully integrated.
+- CRT initialization and __security_cookie setup are not yet complete.
+- PEB loader lists are not yet fully represented like Windows.
+- SEH / unwind / exception compatibility is not yet implemented.
+- Windows file I/O APIs are not yet broad enough for real games.
+- IO completion ports / epoll / io_uring translation is not implemented.
+- Input, audio, clipboard, monitor, fullscreen semantics are incomplete.
+- Vulkan WSI integration is not implemented.
+- OpenGL/WGL support is not implemented.
+- DXVK integration is not implemented.
+- VKD3D-Proton integration is not implemented.
+- Anti-cheat is out of scope initially.
+
+KNOWN REVIEW ITEMS FROM KIMI / CLAUDE AUDITS
+---------------------------------------------
+These were reviewed against the repository during development:
+- Wrong NtStatus constants were identified and patched.
+- TebGuard lifetime/TEB pinning issue was identified and patched.
+- GS restoration over a foreign GS base was identified and patched.
+- WaitWord futex wake/recheck issue was identified and patched.
+- Win32 ABI function-address warnings were cleaned up.
+- Handle allocator weakness was addressed with recycling/overflow protection.
+
+Still worth reviewing as runtime evolves:
+- current_teb_base() currently returns null on ARCH_GET_GS failure rather than surfacing an error directly.
+- Generic NT object manager with object type/refcount/access rights is still needed.
+- VirtualProtect currently cannot report the true previous protection because there is no full virtual-region metadata tracker yet.
+- TEB remains intentionally partial/opaque; do not expose unverified offsets as universal compatibility promises.
+- wait_timeout timespec saturation should be revisited for pathological Duration values.
+
+NEXT ROADMAP (PRIORITIZED)
+--------------------------
+PHASE A: REAL LOADER EXECUTION
+1. Build a real imported-PE test fixture.
+2. Map dependent DLLs.
+3. Resolve imports against loaded real modules and builtin modules.
+4. Patch the main executable IAT with final runtime addresses.
+5. Validate name and ordinal imports.
+6. Add forwarded-export handling.
+7. Execute imported functions through the patched IAT.
+8. Integrate module registry with actual loaded-module ownership/lifetime.
+
+PHASE B: WINDOWS STARTUP SEMANTICS
+9. Build real PEB loader/module lists.
+10. Implement PE TLS directory initialization.
+11. Run TLS callbacks in correct order.
+12. Implement DllMain-equivalent notifications in dependency order.
+13. Implement CRT startup ordering.
+14. Set up __security_cookie correctly before /GS-protected code executes.
+15. Validate .CRT$XI* / .CRT$XC* initialization ordering with fixtures.
+16. Build real thread startup context around TEB/PEB/TLS.
+
+PHASE C: NT/Win32 CORE
+17. Generic typed NT object manager.
+18. Events, mutexes, semaphores, sections.
+19. Better NT memory semantics / region tracking.
+20. NtAllocateVirtualMemory / NtProtectVirtualMemory / related syscall semantics.
+21. File/object APIs.
+22. Process environment APIs and basic process identity.
+23. More kernel32/ntdll APIs only as demanded by real startup traces/tests.
+
+PHASE D: WINDOW + INPUT + GRAPHICS
+24. Fix/finish robust Wayland socket event polling/read cycle.
+25. Native Vulkan Wayland/X11 surfaces.
+26. Vulkan smoke test.
+27. Native OpenGL context + WGL-compatible surface/context path.
+28. Windows input translation.
+29. Fullscreen/resize/monitor semantics.
+30. Clipboard basics.
+
+PHASE E: GRAPHICS TRANSLATION
+31. Vendor/integrate DXVK for D3D9/10/11.
+32. Vendor/integrate VKD3D-Proton for D3D12.
+33. Make Wisp process/thread/memory semantics sufficient for those stacks.
+34. Add shader cache/state-cache integration as needed.
+
+PHASE F: REAL GAMES
+35. Start with simple non-anti-cheat 64-bit games.
+36. Capture startup/API failures.
+37. Implement only the missing APIs/semantics demanded by real workloads.
+38. Benchmark frame-time overhead against native Windows and Proton.
+39. Optimize hot paths after correctness is established.
+
+TESTING RULES
+-------------
+Run from the existing repo directory; do not tell the owner to cd into a hardcoded path.
+Primary checks:
+  cargo build --release
+  cargo test --release
+
+For changes involving PE execution, also run the PE fixture when available.
+For window changes, run the relevant Wayland/X11 smoke test on the host.
+Prefer adding regression tests before or alongside fixes.
+Never suppress a warning merely to make output look clean when it may indicate an ABI or FFI issue.
+
+CODING PRINCIPLES
+-----------------
+- Rust ownership/lifetimes should enforce invariants whenever possible.
+- Unsafe code must be narrow and justified.
+- PE parsing treats all binary input as untrusted.
+- Preserve exact Windows ABI calling conventions at PE-facing boundaries.
+- Keep Linux implementation details behind runtime abstractions.
+- Do not add SDL/GLFW/Qt/GTK as shortcuts for the core game window path.
+- Do not implement Minecraft-style/voxel concepts; irrelevant to Wisp.
+- Do not chase line count. Correct architecture beats huge code volume.
+- Use real tests and fixtures instead of claiming compatibility from unit tests alone.
+
+IMMEDIATE NEXT STEP
+-------------------
+The highest-value next feature is an end-to-end imported PE fixture that proves:
+EXE -> import descriptor -> DLL map -> export resolution -> IAT patch -> Windows-ABI thunk -> DLL/API function -> return value.
+
+After that, move into PE TLS/CRT/DllMain ordering and the first real Win32 file/process APIs. Only then begin Vulkan WSI and DXVK/VKD3D integration.
+
+HANDOFF PHRASE
+--------------
+Continue Wisp from the current repository state. Inspect the current code and recent commits first, preserve working foundations, implement the next roadmap item, test it, and only then proceed upward.
