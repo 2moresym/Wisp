@@ -7,10 +7,10 @@ use thiserror::Error;
 
 const AMD64: u16 = 0x8664;
 const PE32_PLUS: u16 = 0x20b;
+const EXPORT: usize = 0;
 const IMPORT: usize = 1;
 const BASERELOC: usize = 5;
 const TLS: usize = 9;
-const EXPORT: usize = 0;
 const IMAGE_REL_BASED_ABSOLUTE: u16 = 0;
 const IMAGE_REL_BASED_DIR64: u16 = 10;
 const PAGE_SIZE: usize = 4096;
@@ -29,17 +29,16 @@ pub enum PeError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoaderState {
+pub enum LoaderPhase {
     Validate,
     Map,
     Relocate,
-    Imports,
-    DependencyInit,
-    CrtInit,
-    Tls,
-    Entry,
-    Running,
-    Exited,
+    ResolveImports,
+    InitializeDependencies,
+    InitializeMain,
+    InitializeCrt,
+    InitializeTls,
+    Enter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -177,283 +176,4 @@ fn cstr(d: &[u8], o: usize) -> Result<String, PeError> {
         .iter()
         .position(|&b| b == 0)
         .ok_or(PeError::Malformed("unterminated string"))?;
-    String::from_utf8(s[..n].to_vec()).map_err(|_| PeError::Malformed("invalid string"))
-}
-
-pub fn align_up(v: usize, a: usize) -> Option<usize> {
-    let mask = a.checked_sub(1)?;
-    v.checked_add(mask).map(|x| x & !mask)
-}
-
-pub fn inspect(path: impl AsRef<Path>) -> Result<PeImage, PeError> {
-    inspect_bytes(&fs::read(path)?)
-}
-
-/// Strict metadata pass. It never maps or executes the image.
-pub fn inspect_bytes(data: &[u8]) -> Result<PeImage, PeError> {
-    range(data, 0, 0x40)?;
-    if &data[..2] != b"MZ" {
-        return Err(PeError::InvalidImage);
-    }
-    let pe = u32_(data, 0x3c)? as usize;
-    range(data, pe, 24)?;
-    if &data[pe..pe + 4] != b"PE\0\0" {
-        return Err(PeError::InvalidImage);
-    }
-    let machine = u16_(data, pe + 4)?;
-    let nsec = u16_(data, pe + 6)? as usize;
-    let opt_size = u16_(data, pe + 20)? as usize;
-    if machine != AMD64 {
-        return Err(PeError::Unsupported("AMD64 only"));
-    }
-    if nsec == 0 || nsec > 96 {
-        return Err(PeError::Malformed("invalid section count"));
-    }
-    if opt_size < 112 {
-        return Err(PeError::Malformed("optional header too small"));
-    }
-    let opt = pe + 24;
-    range(data, opt, opt_size)?;
-    if u16_(data, opt)? != PE32_PLUS {
-        return Err(PeError::Unsupported("PE32+ only"));
-    }
-    let entry_rva = u32_(data, opt + 16)?;
-    let image_base = u64_(data, opt + 24)?;
-    let section_alignment = u32_(data, opt + 32)?;
-    let file_alignment = u32_(data, opt + 36)?;
-    let size_of_image = u32_(data, opt + 56)?;
-    let size_of_headers = u32_(data, opt + 60)?;
-    let dir_count = u32_(data, opt + 108)?.min(16) as usize;
-    if image_base == 0 || size_of_image == 0 || size_of_headers == 0 || section_alignment == 0 {
-        return Err(PeError::Malformed("invalid image sizing"));
-    }
-    if section_alignment < PAGE_SIZE as u32 && section_alignment < file_alignment {
-        return Err(PeError::Malformed("invalid alignment"));
-    }
-
-    let mut dirs = [DataDirectory::default(); 16];
-    for i in 0..dir_count {
-        let p = opt + 112 + i * 8;
-        range(data, p, 8)?;
-        dirs[i] = DataDirectory {
-            rva: u32_(data, p)?,
-            size: u32_(data, p + 4)?,
-        };
-    }
-
-    let sec_base = opt
-        .checked_add(opt_size)
-        .ok_or(PeError::Malformed("section offset overflow"))?;
-    range(data, sec_base, nsec * 40)?;
-    let mut sections = Vec::with_capacity(nsec);
-    for i in 0..nsec {
-        let p = sec_base + i * 40;
-        let mut name = [0; 8];
-        name.copy_from_slice(&data[p..p + 8]);
-        let virtual_size = u32_(data, p + 8)?;
-        let virtual_address = u32_(data, p + 12)?;
-        let raw_size = u32_(data, p + 16)?;
-        let raw_offset = u32_(data, p + 20)?;
-        let characteristics = u32_(data, p + 36)?;
-        if raw_size != 0 {
-            let end = raw_offset
-                .checked_add(raw_size)
-                .ok_or(PeError::Malformed("section file range overflow"))?;
-            if end as usize > data.len() {
-                return Err(PeError::Malformed("section exceeds file"));
-            }
-        }
-        let span = virtual_size.max(raw_size);
-        if span != 0 {
-            let end = virtual_address
-                .checked_add(span)
-                .ok_or(PeError::Malformed("section RVA overflow"))?;
-            if end > size_of_image {
-                return Err(PeError::Malformed("section exceeds image"));
-            }
-        }
-        sections.push(Section {
-            name,
-            virtual_size,
-            virtual_address,
-            raw_size,
-            raw_offset,
-            characteristics,
-        });
-    }
-    let mut image = PeImage {
-        entry_rva,
-        image_base,
-        size_of_image,
-        size_of_headers,
-        section_alignment,
-        sections,
-        directories: dirs,
-        imports: Vec::new(),
-        tls: None,
-        reloc_size: dirs[BASERELOC].size,
-    };
-    if entry_rva != 0 && image.rva_to_file_offset(entry_rva).is_none() {
-        return Err(PeError::Malformed("entry point outside sections"));
-    }
-    parse_imports(data, &mut image)?;
-    parse_tls(data, &mut image)?;
-    Ok(image)
-}
-
-/// Map a validated PE image into the current Linux process.
-pub fn map_image(path: impl AsRef<Path>) -> Result<MappedImage, PeError> {
-    let data = fs::read(path)?;
-    map_image_bytes(&data)
-}
-
-/// Map a validated PE image from in-memory bytes into the current Linux process.
-pub fn map_image_bytes(data: &[u8]) -> Result<MappedImage, PeError> {
-    let image = inspect_bytes(data)?;
-    let len = align_up(image.size_of_image as usize, PAGE_SIZE)
-        .ok_or(PeError::Malformed("image size overflow"))?;
-
-    let preferred = image.image_base as usize;
-    let mut ptr = unsafe {
-        libc::mmap(
-            preferred as *mut libc::c_void,
-            len,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
-            -1,
-            0,
-        )
-    };
-    if ptr == libc::MAP_FAILED {
-        ptr = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                len,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-    }
-    if ptr == libc::MAP_FAILED {
-        return Err(PeError::Io(std::io::Error::last_os_error()));
-    }
-
-    let mapped_base = ptr as u64;
-    let result = (|| {
-        let dst = ptr.cast::<u8>();
-        let header_len = (image.size_of_headers as usize).min(data.len());
-        unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr(), dst, header_len);
-        }
-        for s in &image.sections {
-            if s.raw_size == 0 {
-                continue;
-            }
-            let src = data
-                .get(s.raw_offset as usize..s.raw_offset as usize + s.raw_size as usize)
-                .ok_or(PeError::Malformed("section raw range"))?;
-            let target = unsafe { dst.add(s.virtual_address as usize) };
-            unsafe {
-                std::ptr::copy_nonoverlapping(src.as_ptr(), target, src.len());
-            }
-        }
-
-        let delta = mapped_base as i128 - image.image_base as i128;
-        if delta != 0 {
-            if image.reloc_size == 0 {
-                return Err(PeError::Unsupported(
-                    "image relocated but has no base relocations",
-                ));
-            }
-            apply_relocations(dst, &image, delta)?;
-        }
-        protect_sections(dst, &image)?;
-        let entry = if image.entry_rva == 0 {
-            0
-        } else {
-            mapped_base
-                .checked_add(image.entry_rva as u64)
-                .ok_or(PeError::Malformed("entry address overflow"))?
-        };
-        Ok::<_, PeError>((entry, delta != 0))
-    })();
-
-    match result {
-        Ok((entry, relocated)) => Ok(MappedImage {
-            ptr: ptr.cast(),
-            len,
-            base: mapped_base,
-            entry,
-            relocated,
-        }),
-        Err(e) => {
-            unsafe {
-                libc::munmap(ptr, len);
-            }
-            Err(e)
-        }
-    }
-}
-
-fn apply_relocations(base: *mut u8, image: &PeImage, delta: i128) -> Result<(), PeError> {
-    let dir = image.directories[BASERELOC];
-    if dir.rva == 0 || dir.size == 0 {
-        return Ok(());
-    }
-    let mut cursor = dir.rva as usize;
-    let limit = cursor
-        .checked_add(dir.size as usize)
-        .ok_or(PeError::Malformed("relocation RVA overflow"))?;
-    while cursor < limit {
-        if cursor + 8 > image.size_of_image as usize {
-            return Err(PeError::Malformed("relocation block outside image"));
-        }
-        let block = unsafe { std::slice::from_raw_parts(base.add(cursor), 8) };
-        let page_rva = u32::from_le_bytes(block[0..4].try_into().unwrap());
-        let block_size = u32::from_le_bytes(block[4..8].try_into().unwrap()) as usize;
-        if block_size < 8 || cursor + block_size > limit {
-            return Err(PeError::Malformed("invalid relocation block"));
-        }
-        let count = (block_size - 8) / 2;
-        for i in 0..count {
-            let raw = unsafe {
-                u16::from_le_bytes(
-                    std::slice::from_raw_parts(base.add(cursor + 8 + i * 2), 2)
-                        .try_into()
-                        .unwrap(),
-                )
-            };
-            let kind = raw >> 12;
-            let off = (raw & 0x0fff) as usize;
-            if kind == IMAGE_REL_BASED_ABSOLUTE {
-                continue;
-            }
-            if kind != IMAGE_REL_BASED_DIR64 {
-                return Err(PeError::Unsupported("non-DIR64 relocation"));
-            }
-            let target_rva = (page_rva as usize)
-                .checked_add(off)
-                .ok_or(PeError::Malformed("relocation target overflow"))?;
-            if target_rva + 8 > image.size_of_image as usize {
-                return Err(PeError::Malformed("relocation target outside image"));
-            }
-            let target = unsafe { base.add(target_rva).cast::<u64>() };
-            let old = unsafe { std::ptr::read_unaligned(target) };
-            let new = (old as i128)
-                .checked_add(delta)
-                .ok_or(PeError::Malformed("relocation value overflow"))?;
-            if !(0..=u64::MAX as i128).contains(&new) {
-                return Err(PeError::Malformed("relocation value out of range"));
-            }
-            unsafe {
-                std::ptr::write_unaligned(target, new as u64);
-            }
-        }
-        cursor += block_size;
-    }
-    Ok(())
-}
-
-fn protect_sections(base: *mut u8, image: &PeImage) -> Result<(),
+    String::from_utf8(s[..n].to_vec()).map_err(|_| PeError::Malformed
