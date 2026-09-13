@@ -1,9 +1,9 @@
-//! Very small forward 3D renderer for the Wisp arena.
+//! Tiny forward 3D renderer for Wisp.
 //!
-//! The renderer deliberately uses one pipeline, one vertex buffer, one index
-//! buffer, one uniform buffer and a depth texture. There are only three draws:
-//! arena, fly and food. This keeps CPU submission and GPU work tiny enough for
-//! Intel HD 4000-class hardware.
+//! The scene intentionally stays primitive: one cube mesh, one octahedron mesh,
+//! one uniform buffer, one pipeline and a depth texture. The arena is a floor
+//! plus four low walls, while the fly and reward are transformed instances of
+//! those tiny meshes. This minimizes shader, vertex and CPU submission cost.
 
 use std::sync::Arc;
 
@@ -34,7 +34,6 @@ impl Vertex {
     }
 }
 
-// Unit cube. Used for the fly and arena wall blocks.
 const CUBE_VERTICES: &[Vertex] = &[
     Vertex { position: [-0.5, -0.5, -0.5] },
     Vertex { position: [0.5, -0.5, -0.5] },
@@ -55,8 +54,6 @@ const CUBE_INDICES: &[u16] = &[
     0, 1, 5, 5, 4, 0,
 ];
 
-// A tiny octahedron is enough to make the reward object distinct without a
-// texture or expensive sphere mesh.
 const FOOD_VERTICES: &[Vertex] = &[
     Vertex { position: [0.0, 0.45, 0.0] },
     Vertex { position: [-0.45, 0.0, 0.0] },
@@ -186,7 +183,6 @@ impl Renderer {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
-
         let depth_view = create_depth_view(&device, &config);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -332,7 +328,6 @@ impl Renderer {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -341,23 +336,145 @@ impl Renderer {
 
         let vp = self.camera.view_projection();
 
-        // Arena floor. A single oversized thin cube avoids an extra mesh type.
-        let floor = Mat4::translation(0.0, -0.35, 0.0).mul(Mat4::scale(18.0, 0.3, 18.0));
-        self.draw_cube(&mut encoder, &view, vp, floor, [0.08, 0.11, 0.08, 1.0]);
+        // First pass clears color and depth; subsequent passes preserve both.
+        self.draw_cube(
+            &mut encoder,
+            &view,
+            vp,
+            Mat4::translation(0.0, -0.35, 0.0).mul(Mat4::scale(18.0, 0.3, 18.0)),
+            [0.07, 0.10, 0.07, 1.0],
+            true,
+        );
 
-        // Fly: small body plus rotation so yaw is visually tied to motor output.
-        let fly_model = Mat4::translation(fly.position[0], fly.position[1], fly.position[2])
+        // Low arena walls keep the fly visibly inside the same physical bounds.
+        let wall_h = 1.25;
+        let wall_t = 0.25;
+        self.draw_cube(
+            &mut encoder,
+            &view,
+            vp,
+            Mat4::translation(8.0, wall_h * 0.5 - 0.15, 0.0)
+                .mul(Mat4::scale(wall_t, wall_h, 16.0)),
+            [0.10, 0.12, 0.10, 1.0],
+            false,
+        );
+        self.draw_cube(
+            &mut encoder,
+            &view,
+            vp,
+            Mat4::translation(-8.0, wall_h * 0.5 - 0.15, 0.0)
+                .mul(Mat4::scale(wall_t, wall_h, 16.0)),
+            [0.10, 0.12, 0.10, 1.0],
+            false,
+        );
+        self.draw_cube(
+            &mut encoder,
+            &view,
+            vp,
+            Mat4::translation(0.0, wall_h * 0.5 - 0.15, 8.0)
+                .mul(Mat4::scale(16.0, wall_h, wall_t)),
+            [0.10, 0.12, 0.10, 1.0],
+            false,
+        );
+        self.draw_cube(
+            &mut encoder,
+            &view,
+            vp,
+            Mat4::translation(0.0, wall_h * 0.5 - 0.15, -8.0)
+                .mul(Mat4::scale(16.0, wall_h, wall_t)),
+            [0.10, 0.12, 0.10, 1.0],
+            false,
+        );
+
+        let fly_model = Mat4::translation(fly.position[0], fly.position[1] + 0.18, fly.position[2])
             .mul(Mat4::rotation_y(fly.rotation_y))
             .mul(Mat4::scale(0.55, 0.35, 0.8));
-        self.draw_cube(&mut encoder, &view, vp, fly_model, [0.25, 0.75, 0.35, 1.0]);
+        self.draw_cube(
+            &mut encoder,
+            &view,
+            vp,
+            fly_model,
+            [0.20, 0.72, 0.34, 1.0],
+            false,
+        );
 
-        // Food/reward.
         let food_model = Mat4::translation(food.position[0], food.position[1] + 0.45, food.position[2]);
-        self.draw_food(&mut encoder, &view, vp, food_model, [0.95, 0.55, 0.08, 1.0]);
+        self.draw_food(
+            &mut encoder,
+            &view,
+            vp,
+            food_model,
+            [0.95, 0.55, 0.06, 1.0],
+        );
 
         self.queue.submit(Some(encoder.finish()));
         frame.present();
         Ok(())
+    }
+
+    fn write_uniforms(&self, vp: Mat4, model: Mat4, color: [f32; 4]) {
+        let uniforms = Uniforms {
+            view_proj: vp.m,
+            model: model.m,
+            color,
+        };
+        self.queue
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+    }
+
+    fn begin_pass<'a>(
+        &'a self,
+        encoder: &'a mut wgpu::CommandEncoder,
+        view: &'a wgpu::TextureView,
+        clear: bool,
+        label: &'a str,
+    ) -> wgpu::RenderPass<'a> {
+        let color_ops = if clear {
+            wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color {
+                    r: 0.018,
+                    g: 0.024,
+                    b: 0.032,
+                    a: 1.0,
+                }),
+                store: wgpu::StoreOp::Store,
+            }
+        } else {
+            wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            }
+        };
+        let depth_ops = if clear {
+            wgpu::Operations {
+                load: wgpu::LoadOp::Clear(1.0),
+                store: wgpu::StoreOp::Store,
+            }
+        } else {
+            wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            }
+        };
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(label),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: color_ops,
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth_view,
+                depth_ops: Some(depth_ops),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+        pass
     }
 
     fn draw_cube(
@@ -367,37 +484,10 @@ impl Renderer {
         vp: Mat4,
         model: Mat4,
         color: [f32; 4],
+        clear: bool,
     ) {
-        let uniforms = Uniforms {
-            view_proj: vp.m,
-            model: model.m,
-            color,
-        };
-        self.queue
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("wisp-cube-pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+        self.write_uniforms(vp, model, color);
+        let mut pass = self.begin_pass(encoder, view, clear, "wisp-cube-pass");
         pass.set_vertex_buffer(0, self.cube_vertex.slice(..));
         pass.set_index_buffer(self.cube_index.slice(..), wgpu::IndexFormat::Uint16);
         pass.draw_indexed(0..CUBE_INDICES.len() as u32, 0, 0..1);
@@ -411,36 +501,8 @@ impl Renderer {
         model: Mat4,
         color: [f32; 4],
     ) {
-        let uniforms = Uniforms {
-            view_proj: vp.m,
-            model: model.m,
-            color,
-        };
-        self.queue
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("wisp-food-pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+        self.write_uniforms(vp, model, color);
+        let mut pass = self.begin_pass(encoder, view, false, "wisp-food-pass");
         pass.set_vertex_buffer(0, self.food_vertex.slice(..));
         pass.set_index_buffer(self.food_index.slice(..), wgpu::IndexFormat::Uint16);
         pass.draw_indexed(0..FOOD_INDICES.len() as u32, 0, 0..1);
