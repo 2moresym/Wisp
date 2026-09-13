@@ -52,6 +52,7 @@ impl Default for BrainConfig {
     }
 }
 
+#[derive(Debug)]
 pub struct Brain {
     membrane: Vec<f32>,
     spikes: Vec<u8>,
