@@ -1,5 +1,7 @@
 use std::f32::consts::PI;
 
+/// Column-major 4x4 matrix stored as four contiguous column vectors.
+/// This matches WGSL's mat4x4<f32> layout when uploaded with bytemuck.
 #[derive(Clone, Copy, Debug)]
 pub struct Mat4 {
     pub m: [[f32; 4]; 4],
@@ -17,12 +19,13 @@ impl Mat4 {
 
     pub fn mul(self, rhs: Self) -> Self {
         let mut out = [[0.0; 4]; 4];
-        for row in 0..4 {
-            for col in 0..4 {
-                out[row][col] = self.m[row][0] * rhs.m[0][col]
-                    + self.m[row][1] * rhs.m[1][col]
-                    + self.m[row][2] * rhs.m[2][col]
-                    + self.m[row][3] * rhs.m[3][col];
+        // Stored as columns: C[col][row].
+        for col in 0..4 {
+            for row in 0..4 {
+                out[col][row] = self.m[0][row] * rhs.m[col][0]
+                    + self.m[1][row] * rhs.m[col][1]
+                    + self.m[2][row] * rhs.m[col][2]
+                    + self.m[3][row] * rhs.m[col][3];
             }
         }
         Self { m: out }
@@ -30,9 +33,7 @@ impl Mat4 {
 
     pub fn translation(x: f32, y: f32, z: f32) -> Self {
         let mut out = Self::IDENTITY;
-        out.m[3][0] = x;
-        out.m[3][1] = y;
-        out.m[3][2] = z;
+        out.m[3] = [x, y, z, 1.0];
         out
     }
 
@@ -65,15 +66,15 @@ impl Mat4 {
         let u = cross(s, f);
         Self {
             m: [
-                [s[0], u[0], -f[0], 0.0],
-                [s[1], u[1], -f[1], 0.0],
-                [s[2], u[2], -f[2], 0.0],
+                [s[0], s[1], s[2], 0.0],
+                [u[0], u[1], u[2], 0.0],
+                [-f[0], -f[1], -f[2], 0.0],
                 [-dot(s, eye), -dot(u, eye), dot(f, eye), 1.0],
             ],
         }
     }
 
-    // Right-handed perspective with wgpu's 0..1 depth range.
+    // Right-handed perspective with a 0..1 depth range for wgpu.
     pub fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> Self {
         let f = 1.0 / (fov_y * 0.5).tan();
         Self {
@@ -104,11 +105,22 @@ impl Camera {
     }
 }
 
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] { [a[0] - b[0], a[1] - b[1], a[2] - b[2]] }
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] }
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
 fn normalize(v: [f32; 3]) -> [f32; 3] {
     let len = dot(v, v).sqrt().max(f32::EPSILON);
     [v[0] / len, v[1] / len, v[2] / len]
@@ -124,6 +136,12 @@ mod tests {
     fn identity_is_identity() {
         assert_eq!(Mat4::IDENTITY.m[0][0], 1.0);
         assert_eq!(Mat4::IDENTITY.m[3][3], 1.0);
+    }
+
+    #[test]
+    fn translation_is_in_final_column() {
+        let t = Mat4::translation(2.0, 3.0, 4.0);
+        assert_eq!(t.m[3], [2.0, 3.0, 4.0, 1.0]);
     }
 
     #[test]
