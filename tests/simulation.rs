@@ -1,5 +1,5 @@
 use wisp::brain::{Brain, BrainConfig, VisualInput};
-use wisp::physics::{Food, Fly};
+use wisp::physics::{Fly, Food};
 use wisp::sim::Simulation;
 
 #[test]
@@ -21,7 +21,15 @@ fn simulation_is_deterministic() {
 fn reward_changes_persistent_weights() {
     let mut brain = Brain::new(BrainConfig::default());
     for _ in 0..8 {
-        brain.step(VisualInput { angle: 0.2, distance: 1.0, lateral: 0.1, approach_velocity: -1.0 }, 0.002);
+        brain.step(
+            VisualInput {
+                angle: 0.2,
+                distance: 1.0,
+                lateral: 0.1,
+                approach_velocity: -1.0,
+            },
+            0.002,
+        );
     }
     let before = brain.weight_checksum();
     brain.inject_dopamine(1.0);

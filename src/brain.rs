@@ -143,15 +143,18 @@ impl Brain {
         let sources = &self.sources;
         let weights = &self.weights;
         let spikes = &self.spikes;
-        self.input_current.par_iter_mut().enumerate().for_each(|(target, current)| {
-            let begin = offsets[target] as usize;
-            let end = offsets[target + 1] as usize;
-            let mut sum = *current;
-            for edge in begin..end {
-                sum += weights[edge] * spikes[sources[edge] as usize] as f32;
-            }
-            *current = sum;
-        });
+        self.input_current
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(target, current)| {
+                let begin = offsets[target] as usize;
+                let end = offsets[target + 1] as usize;
+                let mut sum = *current;
+                for edge in begin..end {
+                    sum += weights[edge] * spikes[sources[edge] as usize] as f32;
+                }
+                *current = sum;
+            });
 
         let leak = (-dt / (self.config.tau_ms * 0.001)).exp();
         let threshold = self.config.threshold;
@@ -160,46 +163,73 @@ impl Brain {
         let current = &self.input_current;
         let membrane = &self.membrane;
         let refractory = &self.refractory;
-        self.next_spikes.par_iter_mut().enumerate().for_each(|(i, spike)| {
-            *spike = u8::from(refractory[i] == 0 && membrane[i] * leak + current[i] >= threshold);
-        });
+        self.next_spikes
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, spike)| {
+                *spike =
+                    u8::from(refractory[i] == 0 && membrane[i] * leak + current[i] >= threshold);
+            });
         let next_spikes = &self.next_spikes;
-        self.membrane.par_iter_mut().enumerate().for_each(|(i, value)| {
-            if refractory[i] != 0 {
-                *value = reset;
-            } else {
-                *value = if next_spikes[i] != 0 { reset } else { *value * leak + current[i] };
-            }
-        });
+        self.membrane
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, value)| {
+                if refractory[i] != 0 {
+                    *value = reset;
+                } else {
+                    *value = if next_spikes[i] != 0 {
+                        reset
+                    } else {
+                        *value * leak + current[i]
+                    };
+                }
+            });
         std::mem::swap(&mut self.spikes, &mut self.next_spikes);
 
         let spikes = &self.spikes;
-        self.refractory.par_iter_mut().enumerate().for_each(|(i, value)| {
-            if spikes[i] != 0 { *value = refractory_steps; }
-            else if *value != 0 { *value -= 1; }
-        });
-        self.traces.par_iter_mut().enumerate().for_each(|(i, trace)| {
-            *trace *= self.config.trace_decay;
-            if spikes[i] != 0 { *trace = (*trace + 1.0).min(4.0); }
-        });
+        self.refractory
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, value)| {
+                if spikes[i] != 0 {
+                    *value = refractory_steps;
+                } else if *value != 0 {
+                    *value -= 1;
+                }
+            });
+        self.traces
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, trace)| {
+                *trace *= self.config.trace_decay;
+                if spikes[i] != 0 {
+                    *trace = (*trace + 1.0).min(4.0);
+                }
+            });
 
         let traces = &self.traces;
         let targets = &self.edge_targets;
-        self.eligibility.par_iter_mut().enumerate().for_each(|(edge, e)| {
-            *e *= self.config.eligibility_decay;
-            let target = targets[edge] as usize;
-            let source = sources[edge] as usize;
-            if spikes[target] != 0 && spikes[source] != 0 {
-                *e = (*e + 1.0).min(4.0);
-            } else if spikes[target] != 0 && traces[source] > 0.1 {
-                *e = (*e + 0.25).min(4.0);
-            }
-        });
+        self.eligibility
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(edge, e)| {
+                *e *= self.config.eligibility_decay;
+                let target = targets[edge] as usize;
+                let source = sources[edge] as usize;
+                if spikes[target] != 0 && spikes[source] != 0 {
+                    *e = (*e + 1.0).min(4.0);
+                } else if spikes[target] != 0 && traces[source] > 0.1 {
+                    *e = (*e + 0.25).min(4.0);
+                }
+            });
 
         if self.dopamine > 0.001 {
             self.apply_dopamine_plasticity();
             self.dopamine *= self.config.dopamine_decay;
-            if self.dopamine < 0.001 { self.dopamine = 0.0; }
+            if self.dopamine < 0.001 {
+                self.dopamine = 0.0;
+            }
         }
         self.input_current.fill(0.0);
         self.step_index += 1;
@@ -212,16 +242,22 @@ impl Brain {
         let lateral = visual.lateral.clamp(-1.0, 1.0);
         let approach = ((-visual.approach_velocity) / 4.0).clamp(-1.0, 1.0);
         let position = ((angle * 0.5 + 0.5) * (VISUAL_SECTORS - 1) as f32)
-            .round().clamp(0.0, (VISUAL_SECTORS - 1) as f32) as usize;
+            .round()
+            .clamp(0.0, (VISUAL_SECTORS - 1) as f32) as usize;
         let sector = (position as isize + (lateral * 2.0).round() as isize)
             .clamp(0, VISUAL_SECTORS as isize - 1) as usize;
         let drive = 1.65 + 1.25 * proximity;
         let base = VISUAL_START + sector * VISUAL_CHANNELS;
         for channel in 0..VISUAL_CHANNELS {
-            let gain = if channel < 4 { drive }
-                else if channel < 8 { drive * proximity }
-                else if channel < 12 { drive * approach.max(0.0) }
-                else { drive * (0.5 + 0.5 * approach) };
+            let gain = if channel < 4 {
+                drive
+            } else if channel < 8 {
+                drive * proximity
+            } else if channel < 12 {
+                drive * approach.max(0.0)
+            } else {
+                drive * (0.5 + 0.5 * approach)
+            };
             self.input_current[base + channel] += gain;
         }
     }
@@ -236,12 +272,19 @@ impl Brain {
             let source = self.sources[edge] as usize;
             let visual = source < VISUAL_COUNT && self.traces[source] > 0.05;
             let eligibility = self.eligibility[edge];
-            let signal = if eligibility > 0.001 { eligibility }
-                else if visual && (KENYON_START..MBON_START).contains(&target) { self.traces[source] }
-                else { 0.0 };
-            if signal <= 0.0 { continue; }
+            let signal = if eligibility > 0.001 {
+                eligibility
+            } else if visual && (KENYON_START..MBON_START).contains(&target) {
+                self.traces[source]
+            } else {
+                0.0
+            };
+            if signal <= 0.0 {
+                continue;
+            }
             let old = self.weights[edge];
-            let new = (old + self.config.learning_rate * reward * signal).clamp(MIN_WEIGHT, MAX_WEIGHT);
+            let new =
+                (old + self.config.learning_rate * reward * signal).clamp(MIN_WEIGHT, MAX_WEIGHT);
             if (new - old).abs() > f32::EPSILON {
                 self.weights[edge] = new;
                 before += old;
@@ -250,8 +293,16 @@ impl Brain {
             }
         }
         self.last_changed = changed;
-        self.last_mean_before = if changed == 0 { 0.0 } else { before / changed as f32 };
-        self.last_mean_after = if changed == 0 { 0.0 } else { after / changed as f32 };
+        self.last_mean_before = if changed == 0 {
+            0.0
+        } else {
+            before / changed as f32
+        };
+        self.last_mean_after = if changed == 0 {
+            0.0
+        } else {
+            after / changed as f32
+        };
     }
 
     fn motor_snapshot(&self) -> BrainSnapshot {
@@ -272,14 +323,30 @@ impl Brain {
         self.apply_dopamine_plasticity();
     }
 
-    pub fn dopamine(&self) -> f32 { self.dopamine }
-    pub fn dopamine_events(&self) -> u64 { self.dopamine_events }
-    pub fn neuron_count(&self) -> usize { NEURONS }
-    pub fn synapse_count(&self) -> usize { self.weights.len() }
-    pub fn last_changed_synapses(&self) -> usize { self.last_changed }
-    pub fn last_mean_weight_before(&self) -> f32 { self.last_mean_before }
-    pub fn last_mean_weight_after(&self) -> f32 { self.last_mean_after }
-    pub fn step_index(&self) -> u64 { self.step_index }
+    pub fn dopamine(&self) -> f32 {
+        self.dopamine
+    }
+    pub fn dopamine_events(&self) -> u64 {
+        self.dopamine_events
+    }
+    pub fn neuron_count(&self) -> usize {
+        NEURONS
+    }
+    pub fn synapse_count(&self) -> usize {
+        self.weights.len()
+    }
+    pub fn last_changed_synapses(&self) -> usize {
+        self.last_changed
+    }
+    pub fn last_mean_weight_before(&self) -> f32 {
+        self.last_mean_before
+    }
+    pub fn last_mean_weight_after(&self) -> f32 {
+        self.last_mean_after
+    }
+    pub fn step_index(&self) -> u64 {
+        self.step_index
+    }
 
     pub fn weight_checksum(&self) -> u64 {
         let mut hash = 0xcbf29ce484222325u64;
@@ -294,10 +361,16 @@ impl Brain {
 
     pub fn memory_bytes(&self) -> usize {
         self.membrane.len() * 4
-            + self.spikes.len() + self.next_spikes.len() + self.refractory.len()
-            + self.input_current.len() * 4 + self.traces.len() * 4
-            + self.offsets.len() * 4 + self.sources.len() * 2 + self.edge_targets.len() * 2
-            + self.weights.len() * 4 + self.eligibility.len() * 4
+            + self.spikes.len()
+            + self.next_spikes.len()
+            + self.refractory.len()
+            + self.input_current.len() * 4
+            + self.traces.len() * 4
+            + self.offsets.len() * 4
+            + self.sources.len() * 2
+            + self.edge_targets.len() * 2
+            + self.weights.len() * 4
+            + self.eligibility.len() * 4
     }
 }
 
@@ -309,7 +382,8 @@ fn layered_source(target: usize, edge: usize) -> usize {
         }
         MBON_START..MOTOR_START => {
             let sector = (target - MBON_START) % VISUAL_SECTORS;
-            KENYON_START + sector * (KENYON_COUNT / VISUAL_SECTORS)
+            KENYON_START
+                + sector * (KENYON_COUNT / VISUAL_SECTORS)
                 + (edge * 17) % (KENYON_COUNT / VISUAL_SECTORS)
         }
         MOTOR_START..PAM_START => {
@@ -330,15 +404,27 @@ fn layered_source(target: usize, edge: usize) -> usize {
 
 fn feedforward_weight(target: usize, edge: usize, seed: u32) -> f32 {
     let random = 0.12 + ((seed & 0xFF) as f32 / 255.0) * 0.08;
-    let gain = if (MOTOR_START..PAM_START).contains(&target) { 1.2 } else { 1.0 };
-    let sign = if (seed & 0x400) != 0 && edge % 5 == 0 { -0.35 } else { 1.0 };
+    let gain = if (MOTOR_START..PAM_START).contains(&target) {
+        1.2
+    } else {
+        1.0
+    };
+    let sign = if (seed & 0x400) != 0 && edge % 5 == 0 {
+        -0.35
+    } else {
+        1.0
+    };
     random * gain * sign
 }
 
-fn spike_sum(values: &[u8]) -> f32 { values.iter().map(|&value| value as f32).sum() }
+fn spike_sum(values: &[u8]) -> f32 {
+    values.iter().map(|&value| value as f32).sum()
+}
 
 fn xorshift(mut x: u32) -> u32 {
-    if x == 0 { x = 0xA341_316C; }
+    if x == 0 {
+        x = 0xA341_316C;
+    }
     x ^= x << 13;
     x ^= x >> 17;
     x ^= x << 5;
@@ -368,16 +454,34 @@ mod tests {
     fn lif_neurons_spike_from_visual_input() {
         let mut brain = Brain::new(BrainConfig::default());
         for _ in 0..8 {
-            brain.step(VisualInput { angle: 0.0, distance: 2.0, lateral: 0.0, approach_velocity: 0.0 }, 0.002);
+            brain.step(
+                VisualInput {
+                    angle: 0.0,
+                    distance: 2.0,
+                    lateral: 0.0,
+                    approach_velocity: 0.0,
+                },
+                0.002,
+            );
         }
-        assert!(brain.traces[..VISUAL_COUNT].iter().any(|trace| *trace > 0.0));
+        assert!(brain.traces[..VISUAL_COUNT]
+            .iter()
+            .any(|trace| *trace > 0.0));
     }
 
     #[test]
     fn dopamine_changes_weights() {
         let mut brain = Brain::new(BrainConfig::default());
         for _ in 0..8 {
-            brain.step(VisualInput { angle: 0.3, distance: 2.0, lateral: 0.2, approach_velocity: -1.0 }, 0.002);
+            brain.step(
+                VisualInput {
+                    angle: 0.3,
+                    distance: 2.0,
+                    lateral: 0.2,
+                    approach_velocity: -1.0,
+                },
+                0.002,
+            );
         }
         let old = brain.weight_checksum();
         brain.inject_dopamine(1.0);
@@ -389,6 +493,9 @@ mod tests {
     fn weight_updates_are_clamped() {
         let mut brain = Brain::new(BrainConfig::default());
         brain.inject_dopamine(2.0);
-        assert!(brain.weights.iter().all(|weight| *weight >= MIN_WEIGHT && *weight <= MAX_WEIGHT));
+        assert!(brain
+            .weights
+            .iter()
+            .all(|weight| *weight >= MIN_WEIGHT && *weight <= MAX_WEIGHT));
     }
 }

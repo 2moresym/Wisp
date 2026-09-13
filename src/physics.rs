@@ -19,15 +19,28 @@ pub struct Food {
 }
 
 impl Default for Fly {
-    fn default() -> Self { Self { position: [0.0, 0.15, 0.0], velocity: [0.0; 3], rotation_y: 0.0 } }
+    fn default() -> Self {
+        Self {
+            position: [0.0, 0.15, 0.0],
+            velocity: [0.0; 3],
+            rotation_y: 0.0,
+        }
+    }
 }
 
 impl Default for Food {
-    fn default() -> Self { Self { position: [5.0, 0.35, 2.0], radius: 0.45 } }
+    fn default() -> Self {
+        Self {
+            position: [5.0, 0.35, 2.0],
+            radius: 0.45,
+        }
+    }
 }
 
 impl Fly {
-    pub fn forward(&self) -> [f32; 3] { [self.rotation_y.cos(), 0.0, self.rotation_y.sin()] }
+    pub fn forward(&self) -> [f32; 3] {
+        [self.rotation_y.cos(), 0.0, self.rotation_y.sin()]
+    }
 
     pub fn visual_input(&self, food: &Food) -> VisualInput {
         let dx = food.position[0] - self.position[0];
@@ -40,7 +53,12 @@ impl Fly {
         let line_x = dx / distance.max(0.001);
         let line_z = dz / distance.max(0.001);
         let approach_velocity = self.velocity[0] * line_x + self.velocity[2] * line_z;
-        VisualInput { angle, distance, lateral, approach_velocity }
+        VisualInput {
+            angle,
+            distance,
+            lateral,
+            approach_velocity,
+        }
     }
 
     pub fn apply_motor(&mut self, turn: f32, forward: f32, dt: f32) {
@@ -84,12 +102,18 @@ impl Fly {
         dx * dx + dz * dz <= radius * radius
     }
 
-    pub fn reset_near_origin(&mut self) { *self = Self::default(); }
+    pub fn reset_near_origin(&mut self) {
+        *self = Self::default();
+    }
 }
 
 pub fn normalize_angle(mut angle: f32) -> f32 {
-    while angle > PI { angle -= 2.0 * PI; }
-    while angle < -PI { angle += 2.0 * PI; }
+    while angle > PI {
+        angle -= 2.0 * PI;
+    }
+    while angle < -PI {
+        angle += 2.0 * PI;
+    }
     angle
 }
 

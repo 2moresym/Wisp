@@ -1,5 +1,5 @@
 use crate::brain::{Brain, BrainConfig, BrainSnapshot};
-use crate::physics::{Food, Fly, ARENA_HALF_SIZE};
+use crate::physics::{Fly, Food, ARENA_HALF_SIZE};
 
 pub const NEURAL_DT: f32 = 0.002;
 const REWARD_COOLDOWN: f32 = 0.25;
@@ -32,7 +32,10 @@ impl Simulation {
             food: Food::default(),
             reward_cooldown: 0.0,
             rng_state: 0x1357_9BDF,
-            stats: SimulationStats { min_food_distance: f32::INFINITY, ..Default::default() },
+            stats: SimulationStats {
+                min_food_distance: f32::INFINITY,
+                ..Default::default()
+            },
         }
     }
 
@@ -42,7 +45,8 @@ impl Simulation {
         self.stats.min_food_distance = self.stats.min_food_distance.min(visual.distance);
         let snapshot = self.brain.step(visual, NEURAL_DT);
         let old_position = self.fly.position;
-        self.fly.apply_motor(snapshot.turn, snapshot.forward, NEURAL_DT);
+        self.fly
+            .apply_motor(snapshot.turn, snapshot.forward, NEURAL_DT);
         self.fly.integrate(NEURAL_DT);
         let dx = self.fly.position[0] - old_position[0];
         let dz = self.fly.position[2] - old_position[2];
@@ -61,7 +65,9 @@ impl Simulation {
     }
 
     pub fn steps(&mut self, count: usize) {
-        for _ in 0..count { self.step(); }
+        for _ in 0..count {
+            self.step();
+        }
     }
 
     pub fn reset_episode(&mut self) {
@@ -105,7 +111,9 @@ impl Simulation {
 }
 
 impl Default for Simulation {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -116,7 +124,10 @@ mod tests {
     fn deterministic() {
         let mut a = Simulation::default();
         let mut b = Simulation::default();
-        for _ in 0..2000 { a.step(); b.step(); }
+        for _ in 0..2000 {
+            a.step();
+            b.step();
+        }
         assert_eq!(a.stats.steps, b.stats.steps);
         assert_eq!(a.stats.rewards, b.stats.rewards);
         assert_eq!(a.brain.weight_checksum(), b.brain.weight_checksum());

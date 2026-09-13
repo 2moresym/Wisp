@@ -26,7 +26,10 @@ struct Args {
 }
 
 fn parse_args() -> Args {
-    let mut args = Args { threads: 2, ..Default::default() };
+    let mut args = Args {
+        threads: 2,
+        ..Default::default()
+    };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -54,11 +57,18 @@ fn parse_seconds<I>(it: &mut I, default: f32) -> Option<f32>
 where
     I: Iterator<Item = String>,
 {
-    Some(it.next().and_then(|value| value.parse::<f32>().ok()).unwrap_or(default).max(0.1))
+    Some(
+        it.next()
+            .and_then(|value| value.parse::<f32>().ok())
+            .unwrap_or(default)
+            .max(0.1),
+    )
 }
 
 fn configure_threads(threads: usize) {
-    let _ = rayon::ThreadPoolBuilder::new().num_threads(threads).build_global();
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global();
 }
 
 fn run_benchmark(seconds: f32, threads: usize) {
@@ -127,7 +137,11 @@ fn process_rss_bytes() -> usize {
     #[cfg(target_os = "linux")]
     {
         if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
-            if let Some(pages) = statm.split_whitespace().nth(1).and_then(|value| value.parse::<usize>().ok()) {
+            if let Some(pages) = statm
+                .split_whitespace()
+                .nth(1)
+                .and_then(|value| value.parse::<usize>().ok())
+            {
                 return pages * 4096;
             }
         }
@@ -159,10 +173,14 @@ impl Default for App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() { return; }
+        if self.window.is_some() {
+            return;
+        }
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes().with_title("Wisp — Drosophila Brain Arena"))
+                .create_window(
+                    Window::default_attributes().with_title("Wisp — Drosophila Brain Arena"),
+                )
                 .expect("failed to create window"),
         );
         match pollster::block_on(Renderer::new(window.clone())) {
@@ -178,14 +196,24 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
-                    && event.logical_key == Key::Named(NamedKey::Escape) => event_loop.exit(),
+                    && event.logical_key == Key::Named(NamedKey::Escape) =>
+            {
+                event_loop.exit()
+            }
             WindowEvent::Resized(size) => {
-                if let Some(renderer) = self.renderer.as_mut() { renderer.resize(size); }
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.resize(size);
+                }
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
@@ -199,7 +227,9 @@ impl ApplicationHandler for App {
                     self.accumulator -= NEURAL_DT;
                     steps += 1;
                 }
-                if steps == 16 && self.accumulator >= NEURAL_DT { self.accumulator = 0.0; }
+                if steps == 16 && self.accumulator >= NEURAL_DT {
+                    self.accumulator = 0.0;
+                }
                 if self.stats_timer >= 2.0 {
                     self.stats_timer = 0.0;
                     log::info!(
@@ -216,7 +246,9 @@ impl ApplicationHandler for App {
                 if let Some(renderer) = self.renderer.as_mut() {
                     match renderer.render(&self.simulation.fly, &self.simulation.food, dt) {
                         Ok(()) => {}
-                        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => renderer.resize(renderer.size()),
+                        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                            renderer.resize(renderer.size())
+                        }
                         Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
                         Err(wgpu::SurfaceError::Timeout) => {}
                     }
@@ -227,22 +259,32 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(window) = self.window.as_ref() { window.request_redraw(); }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
     }
 }
 
 fn main() {
     env_logger::init();
     let args = parse_args();
-    if let Some(seconds) = args.benchmark { run_benchmark(seconds, args.threads); return; }
-    if let Some(seconds) = args.train { run_training(seconds, args.threads); return; }
+    if let Some(seconds) = args.benchmark {
+        run_benchmark(seconds, args.threads);
+        return;
+    }
+    if let Some(seconds) = args.train {
+        run_training(seconds, args.threads);
+        return;
+    }
     configure_threads(args.threads);
     if args.headless {
         let mut simulation = Simulation::default();
         simulation.steps(2_500);
         println!(
             "Wisp headless OK | steps={} rewards={} checksum={:016x}",
-            simulation.stats.steps, simulation.stats.rewards, simulation.brain.weight_checksum()
+            simulation.stats.steps,
+            simulation.stats.rewards,
+            simulation.brain.weight_checksum()
         );
         return;
     }
