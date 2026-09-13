@@ -146,6 +146,7 @@ impl Renderer {
             present_mode: mode,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
+            desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
 
@@ -190,7 +191,7 @@ impl Renderer {
             layout: Some(&pl),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: Some("vs"),
+                entry_point: "vs",
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: 12,
                     step_mode: wgpu::VertexStepMode::Vertex,
@@ -204,7 +205,7 @@ impl Renderer {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs"),
+                entry_point: "fs",
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
@@ -285,16 +286,8 @@ impl Renderer {
     }
 
     fn write(&self, slot: u32, vp: Mat4, model: Mat4, color: [f32; 4]) {
-        let object = Object {
-            vp: vp.to_cols_array(),
-            model: model.to_cols_array(),
-            color,
-        };
-        self.queue.write_buffer(
-            &self.ub,
-            slot as u64 * STRIDE,
-            bytemuck::bytes_of(&object),
-        );
+        let object = Object { vp: vp.to_cols_array(), model: model.to_cols_array(), color };
+        self.queue.write_buffer(&self.ub, slot as u64 * STRIDE, bytemuck::bytes_of(&object));
     }
 
     pub fn render(&mut self, fly: &Fly, food: &Food) -> Result<(), wgpu::SurfaceError> {
@@ -308,7 +301,6 @@ impl Renderer {
             far: 40.0,
         };
         let vp = cam.view_projection();
-
         self.write(0, vp, Mat4::translation(0.0, -0.3, 0.0).mul(Mat4::scale(16.0, 0.5, 16.0)), [0.08, 0.11, 0.09, 1.0]);
         self.write(1, vp, Mat4::translation(0.0, 0.75, -ARENA_HALF_SIZE).mul(Mat4::scale(16.0, 1.5, 0.35)), [0.15, 0.18, 0.17, 1.0]);
         self.write(2, vp, Mat4::translation(0.0, 0.75, ARENA_HALF_SIZE).mul(Mat4::scale(16.0, 1.5, 0.35)), [0.15, 0.18, 0.17, 1.0]);
@@ -326,10 +318,7 @@ impl Renderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.015, g: 0.020, b: 0.028, a: 1.0 }),
-                        store: wgpu::StoreOp::Store,
-                    },
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.015, g: 0.020, b: 0.028, a: 1.0 }), store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth,
@@ -342,8 +331,8 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.cube_v.slice(..));
             pass.set_index_buffer(self.cube_i.slice(..), wgpu::IndexFormat::Uint16);
-            for slot in 0..6 {
-                pass.set_bind_group(0, &self.bg, &[slot * STRIDE as u32]);
+            for n in 0..6 {
+                pass.set_bind_group(0, &self.bg, &[n * STRIDE as u32]);
                 pass.draw_indexed(0..CUBE_I.len() as u32, 0, 0..1);
             }
             pass.set_vertex_buffer(0, self.food_v.slice(..));
