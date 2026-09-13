@@ -172,6 +172,7 @@ impl Brain {
                 }
             });
 
+        let next_spikes = &self.next_spikes;
         self.membrane
             .par_iter_mut()
             .enumerate()
@@ -180,7 +181,7 @@ impl Brain {
                     *value = reset;
                 } else {
                     let integrated = *value * leak + current[i];
-                    *value = if self.next_spikes[i] != 0 { reset } else { integrated };
+                    *value = if next_spikes[i] != 0 { reset } else { integrated };
                 }
             });
 
@@ -252,12 +253,16 @@ impl Brain {
         let mut after_sum = 0.0f32;
 
         for edge in 0..self.weights.len() {
+            let target = edge_target(edge, &self.offsets);
+            let source = self.sources[edge] as usize;
             let eligibility = self.eligibility[edge];
-            if eligibility <= 0.001 {
+            let visual_trace = source < VISUAL_START + VISUAL_COUNT && self.traces[source] > 0.05;
+            let learning_signal = if eligibility > 0.001 { eligibility } else if visual_trace && target >= KENYON_START && target < MBON_START { self.traces[source] } else { 0.0 };
+            if learning_signal <= 0.0 {
                 continue;
             }
             let old = self.weights[edge];
-            let delta = self.config.learning_rate * reward * eligibility;
+            let delta = self.config.learning_rate * reward * learning_signal;
             let new = (old + delta).clamp(MIN_WEIGHT, MAX_WEIGHT);
             if (new - old).abs() > f32::EPSILON {
                 before_sum += old;
@@ -282,7 +287,7 @@ impl Brain {
         }
     }
 
-    /// Activate the simulated PAM dopaminergic cluster and arm reward learning.
+    /// Activate the simulated PAM dopaminergic cluster and apply reward learning.
     pub fn inject_dopamine(&mut self, reward: f32) {
         let reward = reward.clamp(0.0, 2.0);
         self.dopamine = (self.dopamine + reward).min(2.0);
@@ -337,16 +342,11 @@ fn layered_source(target: usize, edge: usize) -> usize {
 }
 
 fn edge_target(edge: usize, offsets: &[u32]) -> usize {
-    // Binary search keeps this utility independent of any additional index array.
     let mut low = 0usize;
     let mut high = offsets.len() - 1;
     while low < high {
         let mid = (low + high) / 2;
-        if offsets[mid + 1] as usize <= edge {
-            low = mid + 1;
-        } else {
-            high = mid;
-        }
+        if offsets[mid + 1] as usize <= edge { low = mid + 1; } else { high = mid; }
     }
     low
 }
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn dopamine_changes_weights() {
         let mut brain = Brain::new(BrainConfig::default());
-        for _ in 0..5 { brain.step(VisualInput { angle: 0.3, distance: 2.0 }, 0.002); }
+        brain.step(VisualInput { angle: 0.3, distance: 2.0 }, 0.002);
         let before = brain.weight_checksum();
         brain.inject_dopamine(1.0);
         assert_ne!(before, brain.weight_checksum());
@@ -383,6 +383,7 @@ mod tests {
     #[test]
     fn weights_stay_clamped() {
         let mut brain = Brain::new(BrainConfig::default());
+        brain.step(VisualInput { angle: 0.0, distance: 1.0 }, 0.002);
         for _ in 0..100 { brain.inject_dopamine(2.0); }
         assert!(brain.weights.iter().all(|w| (*w >= MIN_WEIGHT) && (*w <= MAX_WEIGHT)));
     }
