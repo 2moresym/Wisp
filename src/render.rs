@@ -1,9 +1,8 @@
 //! Tiny forward 3D renderer for Wisp.
 //!
 //! The scene intentionally stays primitive: one cube mesh, one octahedron mesh,
-//! one uniform buffer, one pipeline and a depth texture. The arena is a floor
-//! plus four low walls, while the fly and reward are transformed instances of
-//! those tiny meshes. This minimizes shader, vertex and CPU submission cost.
+//! one render pipeline, one dynamic uniform buffer and one depth texture. All
+//! geometry is submitted in a single render pass with no textures or post FX.
 
 use std::sync::Arc;
 
@@ -15,6 +14,9 @@ use winit::window::Window;
 use crate::camera::{Camera, Mat4};
 use crate::physics::{Food, Fly};
 
+const UNIFORM_ALIGN: u64 = 256;
+const OBJECT_SLOTS: u64 = 7;
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Vertex {
@@ -22,8 +24,7 @@ struct Vertex {
 }
 
 impl Vertex {
-    const ATTRIBS: [wgpu::VertexAttribute; 1] =
-        wgpu::vertex_attr_array![0 => Float32x3];
+    const ATTRIBS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Float32x3];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -191,8 +192,8 @@ impl Renderer {
         });
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("wisp-uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
+            label: Some("wisp-dynamic-uniforms"),
+            size: UNIFORM_ALIGN * OBJECT_SLOTS,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -204,7 +205,7 @@ impl Renderer {
                 visibility: wgpu::ShaderStages::VERTEX,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
+                    has_dynamic_offset: true,
                     min_binding_size: None,
                 },
                 count: None,
@@ -216,7 +217,11 @@ impl Renderer {
             layout: &bind_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
+                resource: wgpu::BufferBinding {
+                    buffer: &uniform_buffer,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(std::mem::size_of::<Uniforms>() as u64),
+                },
             }],
         });
 
@@ -335,177 +340,113 @@ impl Renderer {
             });
 
         let vp = self.camera.view_projection();
+        let objects = [
+            (
+                Mat4::translation(0.0, -0.35, 0.0).mul(Mat4::scale(18.0, 0.3, 18.0)),
+                [0.07, 0.10, 0.07, 1.0],
+            ),
+            (
+                Mat4::translation(8.0, 0.475, 0.0).mul(Mat4::scale(0.25, 1.25, 16.0)),
+                [0.10, 0.12, 0.10, 1.0],
+            ),
+            (
+                Mat4::translation(-8.0, 0.475, 0.0).mul(Mat4::scale(0.25, 1.25, 16.0)),
+                [0.10, 0.12, 0.10, 1.0],
+            ),
+            (
+                Mat4::translation(0.0, 0.475, 8.0).mul(Mat4::scale(16.0, 1.25, 0.25)),
+                [0.10, 0.12, 0.10, 1.0],
+            ),
+            (
+                Mat4::translation(0.0, 0.475, -8.0).mul(Mat4::scale(16.0, 1.25, 0.25)),
+                [0.10, 0.12, 0.10, 1.0],
+            ),
+            (
+                Mat4::translation(fly.position[0], fly.position[1] + 0.18, fly.position[2])
+                    .mul(Mat4::rotation_y(fly.rotation_y))
+                    .mul(Mat4::scale(0.55, 0.35, 0.8)),
+                [0.20, 0.72, 0.34, 1.0],
+            ),
+        ];
 
-        // First pass clears color and depth; subsequent passes preserve both.
-        self.draw_cube(
-            &mut encoder,
-            &view,
-            vp,
-            Mat4::translation(0.0, -0.35, 0.0).mul(Mat4::scale(18.0, 0.3, 18.0)),
-            [0.07, 0.10, 0.07, 1.0],
-            true,
-        );
+        for (slot, (model, color)) in objects.iter().enumerate() {
+            let uniforms = Uniforms {
+                view_proj: vp.m,
+                model: model.m,
+                color: *color,
+            };
+            self.queue.write_buffer(
+                &self.uniform_buffer,
+                slot as u64 * UNIFORM_ALIGN,
+                bytemuck::bytes_of(&uniforms),
+            );
+        }
 
-        // Low arena walls keep the fly visibly inside the same physical bounds.
-        let wall_h = 1.25;
-        let wall_t = 0.25;
-        self.draw_cube(
-            &mut encoder,
-            &view,
-            vp,
-            Mat4::translation(8.0, wall_h * 0.5 - 0.15, 0.0)
-                .mul(Mat4::scale(wall_t, wall_h, 16.0)),
-            [0.10, 0.12, 0.10, 1.0],
-            false,
-        );
-        self.draw_cube(
-            &mut encoder,
-            &view,
-            vp,
-            Mat4::translation(-8.0, wall_h * 0.5 - 0.15, 0.0)
-                .mul(Mat4::scale(wall_t, wall_h, 16.0)),
-            [0.10, 0.12, 0.10, 1.0],
-            false,
-        );
-        self.draw_cube(
-            &mut encoder,
-            &view,
-            vp,
-            Mat4::translation(0.0, wall_h * 0.5 - 0.15, 8.0)
-                .mul(Mat4::scale(16.0, wall_h, wall_t)),
-            [0.10, 0.12, 0.10, 1.0],
-            false,
-        );
-        self.draw_cube(
-            &mut encoder,
-            &view,
-            vp,
-            Mat4::translation(0.0, wall_h * 0.5 - 0.15, -8.0)
-                .mul(Mat4::scale(16.0, wall_h, wall_t)),
-            [0.10, 0.12, 0.10, 1.0],
-            false,
-        );
-
-        let fly_model = Mat4::translation(fly.position[0], fly.position[1] + 0.18, fly.position[2])
-            .mul(Mat4::rotation_y(fly.rotation_y))
-            .mul(Mat4::scale(0.55, 0.35, 0.8));
-        self.draw_cube(
-            &mut encoder,
-            &view,
-            vp,
-            fly_model,
-            [0.20, 0.72, 0.34, 1.0],
-            false,
-        );
-
-        let food_model = Mat4::translation(food.position[0], food.position[1] + 0.45, food.position[2]);
-        self.draw_food(
-            &mut encoder,
-            &view,
-            vp,
-            food_model,
-            [0.95, 0.55, 0.06, 1.0],
-        );
-
-        self.queue.submit(Some(encoder.finish()));
-        frame.present();
-        Ok(())
-    }
-
-    fn write_uniforms(&self, vp: Mat4, model: Mat4, color: [f32; 4]) {
-        let uniforms = Uniforms {
+        let food_uniform = Uniforms {
             view_proj: vp.m,
-            model: model.m,
-            color,
+            model: Mat4::translation(
+                food.position[0],
+                food.position[1] + 0.45,
+                food.position[2],
+            )
+            .m,
+            color: [0.95, 0.55, 0.06, 1.0],
         };
-        self.queue
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-    }
-
-    fn begin_pass<'a>(
-        &'a self,
-        encoder: &'a mut wgpu::CommandEncoder,
-        view: &'a wgpu::TextureView,
-        clear: bool,
-        label: &'a str,
-    ) -> wgpu::RenderPass<'a> {
-        let color_ops = if clear {
-            wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color {
-                    r: 0.018,
-                    g: 0.024,
-                    b: 0.032,
-                    a: 1.0,
-                }),
-                store: wgpu::StoreOp::Store,
-            }
-        } else {
-            wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-            }
-        };
-        let depth_ops = if clear {
-            wgpu::Operations {
-                load: wgpu::LoadOp::Clear(1.0),
-                store: wgpu::StoreOp::Store,
-            }
-        } else {
-            wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-            }
-        };
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            6 * UNIFORM_ALIGN,
+            bytemuck::bytes_of(&food_uniform),
+        );
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some(label),
+            label: Some("wisp-arena-pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
+                view: &view,
                 resolve_target: None,
-                ops: color_ops,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.018,
+                        g: 0.024,
+                        b: 0.032,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.depth_view,
-                depth_ops: Some(depth_ops),
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
                 stencil_ops: None,
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-        pass
-    }
 
-    fn draw_cube(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-        vp: Mat4,
-        model: Mat4,
-        color: [f32; 4],
-        clear: bool,
-    ) {
-        self.write_uniforms(vp, model, color);
-        let mut pass = self.begin_pass(encoder, view, clear, "wisp-cube-pass");
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.uniform_bind_group, &[0]);
         pass.set_vertex_buffer(0, self.cube_vertex.slice(..));
         pass.set_index_buffer(self.cube_index.slice(..), wgpu::IndexFormat::Uint16);
         pass.draw_indexed(0..CUBE_INDICES.len() as u32, 0, 0..1);
-    }
 
-    fn draw_food(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-        vp: Mat4,
-        model: Mat4,
-        color: [f32; 4],
-    ) {
-        self.write_uniforms(vp, model, color);
-        let mut pass = self.begin_pass(encoder, view, false, "wisp-food-pass");
+        for slot in 1..6u32 {
+            pass.set_bind_group(0, &self.uniform_bind_group, &[slot * UNIFORM_ALIGN as u32]);
+            pass.set_vertex_buffer(0, self.cube_vertex.slice(..));
+            pass.set_index_buffer(self.cube_index.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(0..CUBE_INDICES.len() as u32, 0, 0..1);
+        }
+
+        pass.set_bind_group(0, &self.uniform_bind_group, &[6 * UNIFORM_ALIGN as u32]);
         pass.set_vertex_buffer(0, self.food_vertex.slice(..));
         pass.set_index_buffer(self.food_index.slice(..), wgpu::IndexFormat::Uint16);
         pass.draw_indexed(0..FOOD_INDICES.len() as u32, 0, 0..1);
+
+        drop(pass);
+        self.queue.submit(Some(encoder.finish()));
+        frame.present();
+        Ok(())
     }
 }
 
