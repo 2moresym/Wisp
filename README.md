@@ -1,31 +1,64 @@
 # Wisp
 
-Wisp is a lightweight Rust research sandbox for a Drosophila-inspired neural sub-graph coupled to a tiny hardware-accelerated 3D arena.
+Wisp is a deliberately small Rust research platform that couples a Drosophila-inspired neural subgraph to a hardware-accelerated 3D fly arena.
 
-> Wisp is an engineering emulator, not a complete biological reconstruction of the fruit-fly brain.
+> Wisp is a computational emulator and research sandbox, not a complete reconstruction of the ~166,000-neuron Drosophila brain.
 
-## Design targets
+## Goals
 
-- ~5,000 simulated LIF neurons rather than the full ~166k-neuron fly brain.
-- Flat `Vec` storage for membrane state, spikes, traces and sparse synapses.
-- Sparse CSR-style incoming connectivity to keep memory and cache traffic small.
-- Rayon parallelism across independent neuron updates.
-- Dopamine-gated Hebbian plasticity representing a simplified PAM/Mushroom Body reward pathway.
-- `wgpu` + `winit` native windowing with Vulkan/OpenGL backends.
-- No Electron, browser runtime, ECS dependency or heavyweight scene framework.
-- Small low-poly renderer intended for Intel HD 4000-class hardware.
+- 5,000 compact LIF neurons instead of a full-brain reconstruction.
+- Structure-of-arrays state in contiguous `Vec` storage.
+- Sparse 12-edge-per-neuron layered connectivity.
+- Visual -> Kenyon -> MBON -> motor pathway plus a PAM-like dopamine population.
+- Eligibility traces and reward-modulated Hebbian plasticity.
+- Fixed 2 ms neural timestep independent of rendering.
+- Native `winit` + `wgpu`, with Vulkan/OpenGL backends and no ECS/game engine.
+- Low-polygon geometry and tiny GPU buffers suitable for Intel HD 4000-class hardware.
 
-## Architecture
+## Layout
 
 ```text
 src/
-├── main.rs       fixed-timestep brain + render/event loop
-├── brain.rs      5k-neuron LIF model, sparse graph, dopamine plasticity
-├── physics.rs    fly/food state, collision and visual feature extraction
-└── render.rs     minimal wgpu pipeline and GPU buffers
+├── main.rs       CLI, fixed-step scheduler, native window/event loop
+├── brain.rs      5k-neuron SoA model, sparse graph, dopamine learning
+├── sim.rs        deterministic brain + physics orchestration
+├── physics.rs    fly dynamics, food collision, visual feature encoding
+├── camera.rs     small CPU-side view/projection math
+├── render.rs     low-poly wgpu renderer and depth buffer
+└── lib.rs        reusable CPU-side modules for tests
 ```
 
-The fixed neural timestep is 2 ms while rendering is event-driven. Visual features are generated from the fly-to-food relative angle/distance, encoded into the visual population, simulated, then mapped directly into turning/forward motor forces.
+## Neural model
+
+The simulator stores membrane potential, spike state, refractory counters, sensory current, traces, synaptic weights, and per-edge eligibility traces in flat arrays. Connectivity is layered rather than random across the whole graph:
+
+```text
+VISION 1024
+   ↓
+KENYON 2560
+   ↓
+MBON 512
+   ↓
+MOTOR 256
+
+PAM 32  ── dopamine gate ──> plasticity
+```
+
+The neuron model is a compact leaky integrate-and-fire update. The learning path uses an eligibility signal from recent pre/post activity and a dopamine-gated Hebbian potentiation term. Weights are clamped to `[-1, 1]`.
+
+The neural representation is intentionally simplified. It does not claim to reproduce all Drosophila cell types, connectome details, neuromodulators, or sensory processing.
+
+## Simulation and arena
+
+The fly tracks position, velocity, and yaw. Food position is converted each neural tick into relative distance, angle, and lateral bearing. Motor population activity becomes turning and forward thrust. A collision injects dopamine, records a reward event, and deterministically respawns the food.
+
+The renderer uses a single pipeline, a depth attachment, a handful of low-poly draws, and dynamic object uniforms. The camera follows behind the fly so the effect of the brain-controlled movement is visible.
+
+## Performance envelope
+
+The default graph has 5,000 neurons and 60,000 synapses. CPU-side neural storage is intentionally well below the 10–50 MB target. Rayon parallelizes independent state passes and can be restricted to 1–4 worker threads for old CPUs.
+
+The code avoids per-neuron heap allocations, ECS overhead, texture-heavy materials, post-processing, shadows, ray tracing, and GPU readbacks.
 
 ## Build
 
@@ -34,10 +67,28 @@ cargo build --release
 cargo run --release
 ```
 
-## Next milestones
+Useful modes:
 
-1. Replace the initial placeholder projection with a true tiny 3D camera and arena mesh.
-2. Add explicit visual → Kenyon → MBON/PAM → motor populations.
-3. Add measurable STDP eligibility traces and weight histograms.
-4. Add deterministic benchmark mode and memory/CPU telemetry.
-5. Add GPU capability-based renderer fallback and Intel HD 4000 tuning.
+```bash
+cargo run --release -- --help
+cargo run --release -- --headless
+cargo run --release -- --benchmark 5
+cargo run --release -- --benchmark 5 --threads 2
+cargo run --release -- --benchmark 5 --threads 4
+```
+
+`--headless` exercises the CPU simulation without opening a window. `--benchmark` reports neural steps/second, step time, memory estimate, rewards, and a deterministic weight checksum.
+
+## Testing
+
+```bash
+cargo check --all-targets
+cargo test --all-targets
+cargo build --release
+```
+
+The CPU-side tests do not require a GPU window. GitHub Actions repeats the check, test, and release-build steps on every push and pull request.
+
+## Hardware target
+
+Wisp is tuned for the constraints of an old dual-core/quad-thread mobile CPU and Intel HD 4000-class integrated graphics. Actual frame rate and neural throughput depend on the installed Mesa/wgpu backend, display resolution, and OS configuration; benchmark your own machine rather than treating the target as a guaranteed FPS number.
