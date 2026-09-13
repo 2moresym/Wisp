@@ -50,7 +50,7 @@ impl Fly {
         for axis in [0usize,2usize] {
             let limit=ARENA_HALF_SIZE-FLY_RADIUS;
             if self.position[axis]>limit { self.position[axis]=limit; self.velocity[axis]*=-0.45; }
-            else if self.position[axis]<-limit { self.position[axis]=-limit; self.velocity[axis]*=-0.45; }
+            else if self.position[axis] < -limit { self.position[axis]=-limit; self.velocity[axis]*=-0.45; }
         }
         self.position[1]=0.15;
     }
@@ -65,7 +65,7 @@ impl Fly {
     pub fn reset_near_origin(&mut self) { self.position=[0.0,0.15,0.0]; self.velocity=[0.0;3]; self.rotation_y=0.0; }
 }
 
-fn normalize_angle(mut a:f32)->f32 { while a>PI {a-=2.0*PI;} while a<-PI {a+=2.0*PI;} a }
+fn normalize_angle(mut a:f32)->f32 { while a>PI {a-=2.0*PI;} while a < -PI {a+=2.0*PI;} a }
 
 #[cfg(test)]
 mod tests {
