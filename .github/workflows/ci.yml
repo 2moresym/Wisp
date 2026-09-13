@@ -5,14 +5,22 @@ on:
   pull_request:
 
 jobs:
-  test:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format
+        run: cargo fmt --check
       - name: Check
         run: cargo check --all-targets
       - name: Test
         run: cargo test --all-targets
       - name: Release build
         run: cargo build --release
+      - name: Headless smoke
+        run: cargo run --release -- --headless
+      - name: Benchmark smoke
+        run: cargo run --release -- --benchmark 1 --threads 1
